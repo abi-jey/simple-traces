@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import './App.css'
 
 function App() {
@@ -6,10 +6,27 @@ function App() {
   const [selectedTrace, setSelectedTrace] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [pollingEnabled, setPollingEnabled] = useState(true)
+  const [newTracesCount, setNewTracesCount] = useState(0)
+  const [isPolling, setIsPolling] = useState(false)
+  const previousTraceCountRef = useRef(0)
+  const POLLING_INTERVAL = 5000 // 5 seconds
 
   useEffect(() => {
     fetchTraces()
   }, [])
+
+  useEffect(() => {
+    if (!pollingEnabled) {
+      return
+    }
+
+    const intervalId = setInterval(() => {
+      fetchTracesBackground()
+    }, POLLING_INTERVAL)
+
+    return () => clearInterval(intervalId)
+  }, [pollingEnabled, traces.length])
 
   const fetchTraces = async () => {
     try {
@@ -20,11 +37,36 @@ function App() {
       }
       const data = await response.json()
       setTraces(data || [])
+      previousTraceCountRef.current = (data || []).length
+      setNewTracesCount(0)
       setError(null)
     } catch (err) {
       setError(err.message)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const fetchTracesBackground = async () => {
+    try {
+      setIsPolling(true)
+      const response = await fetch('/api/traces')
+      if (!response.ok) {
+        return
+      }
+      const data = await response.json()
+      const newData = data || []
+      
+      if (newData.length > previousTraceCountRef.current) {
+        const newCount = newData.length - previousTraceCountRef.current
+        setNewTracesCount(newCount)
+        setTraces(newData)
+        previousTraceCountRef.current = newData.length
+      }
+    } catch (err) {
+      // Silent fail for background polling
+    } finally {
+      setIsPolling(false)
     }
   }
 
@@ -35,6 +77,11 @@ function App() {
 
   const formatTimestamp = (timestamp) => {
     return new Date(timestamp).toLocaleString()
+  }
+
+  const handleRefresh = () => {
+    setNewTracesCount(0)
+    fetchTraces()
   }
 
   return (
@@ -77,10 +124,25 @@ function App() {
           <div className="content">
             <div className="traces-list">
               <div className="list-header">
-                <h2>Recent Traces ({traces.length})</h2>
-                <button onClick={fetchTraces} className="refresh-btn">
-                  🔄 Refresh
-                </button>
+                <h2>
+                  Recent Traces ({traces.length})
+                  {newTracesCount > 0 && (
+                    <span className="new-badge">+{newTracesCount} new</span>
+                  )}
+                </h2>
+                <div className="header-controls">
+                  <button 
+                    onClick={() => setPollingEnabled(!pollingEnabled)} 
+                    className={`polling-toggle ${pollingEnabled ? 'active' : ''}`}
+                    title={pollingEnabled ? 'Disable auto-refresh' : 'Enable auto-refresh'}
+                  >
+                    {pollingEnabled ? '⏸️ Auto-refresh' : '▶️ Auto-refresh'}
+                    {isPolling && pollingEnabled && <span className="polling-indicator">●</span>}
+                  </button>
+                  <button onClick={handleRefresh} className="refresh-btn">
+                    🔄 Refresh
+                  </button>
+                </div>
               </div>
               
               {traces.map((trace) => (
