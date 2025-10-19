@@ -96,7 +96,13 @@ def main():
     print("✓ Sent nested conversation traces")
 
     # Ensure all spans are exported before exiting
-    trace.get_tracer_provider().shutdown()
+    print("\nShutting down tracer provider...")
+    try:
+        trace.get_tracer_provider().shutdown()
+        print("✓ Tracer provider shutdown successfully")
+    except Exception as e:
+        print(f"⚠ Warning: Error during shutdown: {e}")
+        print("  Some traces may not have been fully exported")
     
     print("\n✅ All traces sent successfully!")
     print("View them at: http://localhost:8080")

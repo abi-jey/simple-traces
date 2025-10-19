@@ -241,15 +241,12 @@ span.setAttribute('llm.usage.completion_tokens', 25);
 span.end();
 ```
 
-### Example Usage
+### Additional Examples
 
-See the `examples/otel-client.js` file for a complete OpenTelemetry integration example (if available in the repository).
+For more examples of OpenTelemetry integration, check the `examples/` directory in this repository which includes:
+- `python_otlp_client.py` - Complete Python example with LLM trace attributes
+- See `examples/README.md` for more details and usage instructions
 
-```bash
-cd examples
-npm install
-npm run otel
-```
 
 ### Logging Configuration
 

@@ -280,6 +280,10 @@ func convertOTLPAttribute(attr *commonpb.KeyValue) attribute.KeyValue {
 }
 
 // attrValueToInterface converts an attribute.Value to a Go interface{}
+// It handles all OpenTelemetry attribute types including:
+// - Primitive types (bool, int64, float64, string)
+// - Slice types ([]bool, []int64, []float64, []string)
+// For unsupported types, it falls back to string conversion using AsString()
 func attrValueToInterface(v attribute.Value) interface{} {
 	switch v.Type() {
 	case attribute.BOOL:
