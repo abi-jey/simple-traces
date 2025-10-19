@@ -214,19 +214,17 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 
 	// Extract model information from attributes (if available)
 	model := "unknown"
+	for _, key := range modelKeys {
+		if modelAttr, ok := attrs[key]; ok {
+			model = fmt.Sprintf("%v", modelAttr)
+			break
+		}
+	}
+	
 	input := ""
 	output := ""
 	promptTokens := 0
 	outputTokens := 0
-
-	// Check for common LLM-related attributes
-	if modelAttr, ok := attrs["llm.model"]; ok {
-		model = fmt.Sprintf("%v", modelAttr)
-	} else if modelAttr, ok := attrs["gen_ai.request.model"]; ok {
-		model = fmt.Sprintf("%v", modelAttr)
-	} else if modelAttr, ok := attrs["resource.service.name"]; ok {
-		model = fmt.Sprintf("%v", modelAttr)
-	}
 
 	if inputAttr, ok := attrs["llm.input"]; ok {
 		input = fmt.Sprintf("%v", inputAttr)
