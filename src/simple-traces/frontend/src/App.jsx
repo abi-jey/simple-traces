@@ -26,7 +26,7 @@ function App() {
     }, POLLING_INTERVAL)
 
     return () => clearInterval(intervalId)
-  }, [pollingEnabled, traces.length])
+  }, [pollingEnabled])
 
   const fetchTraces = async () => {
     try {
@@ -62,9 +62,15 @@ function App() {
         setNewTracesCount(newCount)
         setTraces(newData)
         previousTraceCountRef.current = newData.length
+      } else if (newData.length < previousTraceCountRef.current) {
+        // Handle trace deletion - reset and update
+        setTraces(newData)
+        previousTraceCountRef.current = newData.length
+        setNewTracesCount(0)
       }
     } catch (err) {
-      // Silent fail for background polling
+      // Silent fail for background polling, but log for debugging
+      console.debug('Background polling error:', err)
     } finally {
       setIsPolling(false)
     }
