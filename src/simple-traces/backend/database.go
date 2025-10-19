@@ -114,6 +114,12 @@ type Database interface {
 	// Conversations API
 	BatchUpsertConversations(updates []ConversationUpdate) error
 	GetConversations(limit int, before time.Time) ([]Conversation, error)
+	// Ensure all spans for a trace_id have a conversation id attribute
+	PropagateConversationID(traceID, conversationID string) (int64, error)
+	// Delete by conversation id
+	DeleteSpansByConversationID(conversationID string) (int64, error)
+	DeleteSpanAttributesByConversationID(conversationID string) (int64, error)
+	DeleteConversationRow(conversationID string) (int64, error)
 	Close() error
 }
 
@@ -544,7 +550,7 @@ func (s *SQLiteDB) DeleteSpansByTraceID(traceID string) (int64, error) {
 
 func (s *SQLiteDB) DeleteSpansByGroupID(groupID string) (int64, error) {
 	gid := sqliteGroupIDExpr()
-	q := `DELETE FROM spans WHERE ` + gid + ` = ?`
+	q := `DELETE FROM spans WHERE span_id IN (SELECT s.span_id FROM spans s WHERE ` + gid + ` = ?)`
 	res, err := s.db.Exec(q, groupID)
 	if err != nil {
 		return 0, err
@@ -566,6 +572,84 @@ func (s *SQLiteDB) DeleteSpanAttributesByGroupID(groupID string) (int64, error) 
 	gid := sqliteGroupIDExpr()
 	q := `DELETE FROM span_attributes WHERE span_id IN (SELECT span_id FROM spans s WHERE ` + gid + ` = ?)`
 	res, err := s.db.Exec(q, groupID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// PropagateConversationID ensures every span under a trace_id has gen_ai.conversation.id set
+func (s *SQLiteDB) PropagateConversationID(traceID, conversationID string) (int64, error) { // fmt: skip
+	if strings.TrimSpace(traceID) == "" || strings.TrimSpace(conversationID) == "" {
+		return 0, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	// Insert attribute for spans that don't have it yet (PK conflict ignored)
+	res, err := tx.Exec(`
+		INSERT OR IGNORE INTO span_attributes (
+			span_id, trace_id, key, type, string_val
+		)
+		SELECT s.span_id, s.trace_id, 'gen_ai.conversation.id', 'string', ?
+		FROM spans s
+		WHERE s.trace_id = ?
+	`, conversationID, traceID)
+	if err != nil {
+		tx.Rollback()
+		return 0, err
+	}
+	inserted, _ := res.RowsAffected()
+
+	if err := tx.Commit(); err != nil {
+		return inserted, err
+	}
+
+	// Aggregate spans for this trace to upsert conversations
+	var first, last time.Time
+	var count int
+	err = s.db.QueryRow(`
+		SELECT MIN(start_time), MAX(end_time), COUNT(*) FROM spans WHERE trace_id = ?
+	`, traceID).Scan(&first, &last, &count)
+	if err == nil && count > 0 {
+		// model from latest span
+		var attrJSON string
+		_ = s.db.QueryRow(`
+			SELECT attributes FROM spans WHERE trace_id = ? ORDER BY start_time DESC LIMIT 1
+		`, traceID).Scan(&attrJSON)
+		model := extractModelFromAttrJSON(attrJSON)
+		_ = s.BatchUpsertConversations([]ConversationUpdate{{ID: conversationID, Start: first, End: last, Count: count, Model: model}})
+	}
+	return inserted, nil
+}
+
+func (s *SQLiteDB) DeleteSpansByConversationID(conversationID string) (int64, error) {
+	// spans with this conversation id in span_attributes
+	q := `DELETE FROM spans WHERE span_id IN (
+			SELECT sa.span_id FROM span_attributes sa
+			WHERE sa.key = 'gen_ai.conversation.id' AND sa.string_val = ?
+		)`
+	res, err := s.db.Exec(q, conversationID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+func (s *SQLiteDB) DeleteSpanAttributesByConversationID(conversationID string) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM span_attributes WHERE key = 'gen_ai.conversation.id' AND string_val = ?`, conversationID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+func (s *SQLiteDB) DeleteConversationRow(conversationID string) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM conversations WHERE id = ?`, conversationID)
 	if err != nil {
 		return 0, err
 	}
@@ -1033,7 +1117,7 @@ func (p *PostgresDB) DeleteSpansByTraceID(traceID string) (int64, error) {
 
 func (p *PostgresDB) DeleteSpansByGroupID(groupID string) (int64, error) {
 	gid := pgGroupIDExpr()
-	q := `DELETE FROM spans WHERE ` + gid + ` = $1`
+	q := `DELETE FROM spans WHERE span_id IN (SELECT s.span_id FROM spans s WHERE ` + gid + ` = $1)`
 	res, err := p.db.Exec(q, groupID)
 	if err != nil {
 		return 0, err
@@ -1055,6 +1139,80 @@ func (p *PostgresDB) DeleteSpanAttributesByGroupID(groupID string) (int64, error
 	gid := pgGroupIDExpr()
 	q := `DELETE FROM span_attributes WHERE span_id IN (SELECT span_id FROM spans s WHERE ` + gid + ` = $1)`
 	res, err := p.db.Exec(q, groupID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+func (p *PostgresDB) PropagateConversationID(traceID, conversationID string) (int64, error) { // fmt: skip
+	if strings.TrimSpace(traceID) == "" || strings.TrimSpace(conversationID) == "" {
+		return 0, nil
+	}
+	tx, err := p.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(`
+		INSERT INTO span_attributes (
+			span_id, trace_id, key, type, string_val
+		)
+		SELECT s.span_id, s.trace_id, 'gen_ai.conversation.id', 'string', $1
+		FROM spans s
+		WHERE s.trace_id = $2
+		ON CONFLICT (span_id, key) DO NOTHING
+	`, conversationID, traceID)
+	if err != nil {
+		tx.Rollback()
+		return 0, err
+	}
+	inserted, _ := res.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return inserted, err
+	}
+
+	// Aggregate
+	var first, last time.Time
+	var count int
+	err = p.db.QueryRow(`
+		SELECT MIN(start_time), MAX(end_time), COUNT(*) FROM spans WHERE trace_id = $1
+	`, traceID).Scan(&first, &last, &count)
+	if err == nil && count > 0 {
+		var attrJSON string
+		_ = p.db.QueryRow(`
+			SELECT attributes FROM spans WHERE trace_id = $1 ORDER BY start_time DESC LIMIT 1
+		`, traceID).Scan(&attrJSON)
+		model := extractModelFromAttrJSON(attrJSON)
+		_ = p.BatchUpsertConversations([]ConversationUpdate{{ID: conversationID, Start: first, End: last, Count: count, Model: model}})
+	}
+	return inserted, nil
+}
+
+func (p *PostgresDB) DeleteSpansByConversationID(conversationID string) (int64, error) {
+	q := `DELETE FROM spans WHERE span_id IN (
+			SELECT sa.span_id FROM span_attributes sa
+			WHERE sa.key = 'gen_ai.conversation.id' AND sa.string_val = $1
+		)`
+	res, err := p.db.Exec(q, conversationID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+func (p *PostgresDB) DeleteSpanAttributesByConversationID(conversationID string) (int64, error) {
+	res, err := p.db.Exec(`DELETE FROM span_attributes WHERE key = 'gen_ai.conversation.id' AND string_val = $1`, conversationID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+func (p *PostgresDB) DeleteConversationRow(conversationID string) (int64, error) {
+	res, err := p.db.Exec(`DELETE FROM conversations WHERE id = $1`, conversationID)
 	if err != nil {
 		return 0, err
 	}

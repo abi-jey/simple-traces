@@ -119,8 +119,16 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// upsert conversations
 	if len(convAgg) > 0 {
 		updates := make([]ConversationUpdate, 0, len(convAgg))
-		for _, v := range convAgg {
+		for cid, v := range convAgg {
 			updates = append(updates, *v)
+			// also propagate this conversation id to all spans that share the same trace id if missing
+			// we use the span trace_id as fallback linkage: update after inserts
+			for _, sp := range spanRows {
+				// propagate for spans that occurred in this batch with the same conversation id found
+				// Note: deriveConversationID used attributes only; here we ensure every span under the same OTLP trace
+				// gets the conv id if not already present.
+				_, _ = h.db.PropagateConversationID(sp.TraceID, cid)
+			}
 		}
 		if err := h.db.BatchUpsertConversations(updates); err != nil {
 			h.logger.Error("Failed to upsert conversations: %v", err)

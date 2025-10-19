@@ -67,6 +67,7 @@ func Run() error {
 
 	// Conversations API
 	api.HandleFunc("/conversations", getConversationsHandler(db, logger)).Methods("GET")
+	api.HandleFunc("/conversations/{id}", deleteConversationHandler(db, logger)).Methods("DELETE")
 
 	// OpenTelemetry OTLP endpoint
 	if config.OTLPEnabled {
@@ -459,6 +460,22 @@ func importSpansJSONLHandler(db Database, logger *Logger) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("failed to save span attributes: %v", err), http.StatusInternalServerError)
 			return
 		}
+		// If we derived any conversation ids, propagate them to all spans with the same trace_id
+		if len(convAgg) > 0 {
+			for cid := range convAgg {
+				// for each trace present in this batch, propagate
+				seen := map[string]struct{}{}
+				for _, sp := range spans {
+					if _, ok := seen[sp.TraceID]; ok {
+						continue
+					}
+					seen[sp.TraceID] = struct{}{}
+					if _, err := db.PropagateConversationID(sp.TraceID, cid); err != nil {
+						logger.Warn("propagate conversation id failed trace=%s cid=%s: %v", sp.TraceID, cid, err)
+					}
+				}
+			}
+		}
 		if len(convAgg) > 0 {
 			updates := make([]ConversationUpdate, 0, len(convAgg))
 			for _, v := range convAgg {
@@ -744,5 +761,33 @@ func getConversationsHandler(db Database, logger *Logger) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(convs)
+	}
+}
+
+// deleteConversationHandler deletes all data linked to a conversation id
+func deleteConversationHandler(db Database, logger *Logger) http.HandlerFunc { // fmt: skip
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		id := strings.TrimSpace(vars["id"])
+		if id == "" {
+			http.Error(w, "missing id", http.StatusBadRequest)
+			return
+		}
+
+		// Best-effort: delete spans first (will also orphan attributes if not removed)
+		nSpans, err := db.DeleteSpansByConversationID(id)
+		if err != nil {
+			logger.Error("delete spans by conversation id failed: %v", err)
+			http.Error(w, fmt.Sprintf("failed to delete spans: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if _, err := db.DeleteSpanAttributesByConversationID(id); err != nil {
+			logger.Warn("delete span attributes by conversation id failed: %v", err)
+		}
+		if _, err := db.DeleteConversationRow(id); err != nil {
+			logger.Warn("delete conversation row failed: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "deleted_spans": nSpans})
 	}
 }
