@@ -63,13 +63,26 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Process each resource span
 	spansProcessed := 0
+	// Collect spans for batch insert for efficiency
+	var spanRows []Span
 	for _, rs := range req.ResourceSpans {
 		for _, ss := range rs.ScopeSpans {
 			for _, span := range ss.Spans {
-				h.processSpan(span, rs.Resource)
+				// Create trace entry and span row
+				traceEntry, spanRow := h.transformSpan(span, rs.Resource)
+				// Store trace for frontend compatibility
+				if _, err := h.db.CreateTrace(traceEntry); err != nil {
+					h.logger.Error("Failed to store trace from OTLP span: %v", err)
+				}
+				spanRows = append(spanRows, spanRow)
 				spansProcessed++
 			}
 		}
+	}
+
+	// Batch insert spans
+	if err := h.db.BatchInsertSpans(spanRows); err != nil {
+		h.logger.Error("Failed to batch insert %d spans: %v", len(spanRows), err)
 	}
 
 	h.logger.Info("Successfully processed %d spans from OTLP export", spansProcessed)
@@ -88,8 +101,8 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(respBytes)
 }
 
-// processSpan converts and stores an OTLP span directly
-func (h *OTLPHandler) processSpan(span *tracepbv1.Span, resource *resourcepb.Resource) {
+// transformSpan converts an OTLP span to our Trace and Span structs
+func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.Resource) (Trace, Span) {
 	h.logger.Debug("Processing OTLP span: %s", span.Name)
 
 	// Extract attributes into a map
@@ -194,11 +207,7 @@ func (h *OTLPHandler) processSpan(span *tracepbv1.Span, resource *resourcepb.Res
 		attrs["span.events"] = events
 	}
 
-	metadataJSON, err := json.Marshal(attrs)
-	if err != nil {
-		h.logger.Error("Failed to marshal span attributes: %v", err)
-		return
-	}
+	metadataJSON, _ := json.Marshal(attrs)
 
 	// Create trace entry
 	traceEntry := Trace{
@@ -212,15 +221,41 @@ func (h *OTLPHandler) processSpan(span *tracepbv1.Span, resource *resourcepb.Res
 		Timestamp:    startTime,
 	}
 
-	// Store in database
-	id, err := h.db.CreateTrace(traceEntry)
-	if err != nil {
-		h.logger.Error("Failed to store trace from OTLP span: %v", err)
-		return
+	// Build span row
+	attrsOnly := make(map[string]interface{})
+	// Keep the original attributes except calculated fields like span.name, ids, status; events are handled separately
+	for k, v := range attrs {
+		switch k {
+		case "span.events":
+			// handled below
+		default:
+			attrsOnly[k] = v
+		}
+	}
+	attrsStr, _ := json.Marshal(attrsOnly)
+	var eventsStr []byte
+	if ev, ok := attrs["span.events"]; ok {
+		eventsStr, _ = json.Marshal(ev)
 	}
 
-	h.logger.Info("Stored trace from OTLP span: %s (Model: %s, Duration: %dms, Tokens: %d/%d)",
-		id, model, duration, promptTokens, outputTokens)
+	spanRow := Span{
+		SpanID:     fmt.Sprintf("%x", span.SpanId),
+		TraceID:    fmt.Sprintf("%x", span.TraceId),
+		Name:       span.Name,
+		StartTime:  startTime,
+		EndTime:    endTime,
+		DurationMS: duration,
+		StatusCode: "",
+		StatusDesc: "",
+		Attributes: string(attrsStr),
+		Events:     string(eventsStr),
+	}
+	if span.Status != nil {
+		spanRow.StatusCode = statusCodeToString(span.Status.Code)
+		spanRow.StatusDesc = span.Status.Message
+	}
+
+	return traceEntry, spanRow
 }
 
 func spanKindToString(kind tracepbv1.Span_SpanKind) string {

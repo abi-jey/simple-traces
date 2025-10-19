@@ -1,10 +1,12 @@
 package backend
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +54,11 @@ func Run() error {
 	api.HandleFunc("/traces", createTraceHandler(db, logger)).Methods("POST")
 	api.HandleFunc("/traces", getTracesHandler(db, logger)).Methods("GET")
 	api.HandleFunc("/traces/{id}", getTraceByIDHandler(db, logger)).Methods("GET")
+	api.HandleFunc("/traces/{id}", deleteTraceHandler(db, logger)).Methods("DELETE")
+
+	// Spans endpoints: list and import JSONL examples
+	api.HandleFunc("/spans", getSpansHandler(db, logger)).Methods("GET")
+	api.HandleFunc("/spans/import", importSpansJSONLHandler(db, logger)).Methods("POST")
 
 	// OpenTelemetry OTLP endpoint
 	if config.OTLPEnabled {
@@ -218,8 +225,25 @@ func createTraceHandler(db Database, logger *Logger) http.HandlerFunc {
 
 func getTracesHandler(db Database, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		logger.Debug("Fetching all traces")
-		traces, err := db.GetTraces()
+		// Optional pagination: limit (default 100), before (RFC3339 timestamp)
+		q := r.URL.Query()
+		limit := 100
+		if s := strings.TrimSpace(q.Get("limit")); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				limit = v
+			}
+		}
+		var before time.Time
+		if sb := strings.TrimSpace(q.Get("before")); sb != "" {
+			if t, err := time.Parse(time.RFC3339Nano, sb); err == nil {
+				before = t
+			} else if t, err := time.Parse(time.RFC3339, sb); err == nil {
+				before = t
+			}
+		}
+
+		logger.Debug("Fetching traces with limit=%d before=%v", limit, before)
+		traces, err := db.GetTracesPaginated(limit, before)
 		if err != nil {
 			logger.Error("Failed to get traces: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to get traces: %v", err), http.StatusInternalServerError)
@@ -258,4 +282,230 @@ func getTraceByIDHandler(db Database, logger *Logger) http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(trace)
 	}
+}
+
+func deleteTraceHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		id := vars["id"]
+		logger.Debug("Deleting trace: %s", id)
+
+		// Try to find related OTLP trace_id from metadata and delete those spans
+		if tr, err := db.GetTraceByID(id); err == nil && tr != nil && tr.Metadata != "" {
+			var meta map[string]any
+			if err := json.Unmarshal([]byte(tr.Metadata), &meta); err == nil {
+				if otlpID, ok := meta["trace.id"].(string); ok && otlpID != "" {
+					if _, err := db.DeleteSpansByTraceID(otlpID); err != nil {
+						logger.Warn("Failed deleting spans for otlp trace %s: %v", otlpID, err)
+					}
+				}
+			}
+		}
+
+		if err := db.DeleteTrace(id); err != nil {
+			logger.Error("Failed to delete trace %s: %v", id, err)
+			http.Error(w, fmt.Sprintf("Failed to delete trace: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}
+}
+
+// getSpansHandler returns spans ordered by start_time DESC with optional pagination
+func getSpansHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		limit := 100
+		if s := strings.TrimSpace(q.Get("limit")); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				limit = v
+			}
+		}
+		var before time.Time
+		if sb := strings.TrimSpace(q.Get("before")); sb != "" {
+			if t, err := time.Parse(time.RFC3339Nano, sb); err == nil {
+				before = t
+			} else if t, err := time.Parse(time.RFC3339, sb); err == nil {
+				before = t
+			}
+		}
+		spans, err := db.GetSpans(limit, before)
+		if err != nil {
+			logger.Error("Failed to get spans: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to get spans: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(spans)
+	}
+}
+
+// importSpansJSONLHandler accepts a JSON body with either a path to a JSONL file under data/ or an array of span objects
+// Example body: {"path": "data/telegram_agent_traces.jsonl"}
+// or {"spans": [{...}, {...}]}
+func importSpansJSONLHandler(db Database, logger *Logger) http.HandlerFunc {
+	type Req struct {
+		Path  string           `json:"path"`
+		Spans []map[string]any `json:"spans"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req Req
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		var spans []Span
+		if len(req.Spans) > 0 {
+			for _, raw := range req.Spans {
+				if sp, err := spanFromRaw(raw); err == nil {
+					spans = append(spans, sp)
+				} else {
+					logger.Warn("skip invalid span: %v", err)
+				}
+			}
+		} else if req.Path != "" {
+			// Limit to project working dir
+			if !strings.HasPrefix(req.Path, "./") && !strings.HasPrefix(req.Path, "/") {
+				req.Path = "./" + req.Path
+			}
+			// Scan the JSONL file line by line to avoid loading into memory
+			file, err := os.Open(req.Path)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("open file: %v", err), http.StatusBadRequest)
+				return
+			}
+			defer file.Close()
+			scanner := bufio.NewScanner(file)
+			buf := make([]byte, 0, 1024*1024)
+			scanner.Buffer(buf, 10*1024*1024)
+			for scanner.Scan() {
+				line := strings.TrimSpace(scanner.Text())
+				if line == "" {
+					continue
+				}
+				raw, err := decodeJSONLineUseNumber(line)
+				if err != nil {
+					logger.Warn("bad jsonl line: %v", err)
+					continue
+				}
+				sp, err := spanFromRaw(raw)
+				if err != nil {
+					logger.Warn("skip invalid span: %v", err)
+					continue
+				}
+				spans = append(spans, sp)
+			}
+			if err := scanner.Err(); err != nil {
+				http.Error(w, fmt.Sprintf("scan jsonl: %v", err), http.StatusBadRequest)
+				return
+			}
+		} else {
+			http.Error(w, "provide either 'path' or 'spans'", http.StatusBadRequest)
+			return
+		}
+
+		if err := db.BatchInsertSpans(spans); err != nil {
+			logger.Error("batch insert spans: %v", err)
+			http.Error(w, fmt.Sprintf("failed to save spans: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"inserted": len(spans)})
+	}
+}
+
+// spanFromRaw maps the sample JSON span shape to our Span struct
+func spanFromRaw(raw map[string]any) (Span, error) {
+	// Required fields
+	name, _ := raw["name"].(string)
+	traceID, _ := raw["trace_id"].(string)
+	spanID, _ := raw["span_id"].(string)
+	if name == "" || traceID == "" || spanID == "" {
+		return Span{}, fmt.Errorf("missing required fields")
+	}
+	// times are in UnixNano per sample
+	var start, end time.Time
+	switch v := raw["start_time"].(type) {
+	case float64:
+		start = time.Unix(0, int64(v))
+	case int64:
+		start = time.Unix(0, v)
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			start = time.Unix(0, n)
+		}
+	case string:
+		// try parse as int64 string
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			start = time.Unix(0, n)
+		}
+	}
+	switch v := raw["end_time"].(type) {
+	case float64:
+		end = time.Unix(0, int64(v))
+	case int64:
+		end = time.Unix(0, v)
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			end = time.Unix(0, n)
+		}
+	case string:
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			end = time.Unix(0, n)
+		}
+	}
+	if start.IsZero() || end.IsZero() {
+		return Span{}, fmt.Errorf("invalid timestamps")
+	}
+	dur := end.Sub(start).Milliseconds()
+
+	// status
+	statusCode := ""
+	statusDesc := ""
+	if st, ok := raw["status"].(map[string]any); ok {
+		if v, ok := st["status_code"].(string); ok {
+			statusCode = v
+		}
+		if v, ok := st["description"].(string); ok {
+			statusDesc = v
+		}
+	}
+
+	// attributes/events
+	var attrsStr, eventsStr string
+	if attrs, ok := raw["attributes"].(map[string]any); ok {
+		if b, err := json.Marshal(attrs); err == nil {
+			attrsStr = string(b)
+		}
+	}
+	if events, ok := raw["events"].([]any); ok {
+		if b, err := json.Marshal(events); err == nil {
+			eventsStr = string(b)
+		}
+	}
+
+	return Span{
+		SpanID:     spanID,
+		TraceID:    traceID,
+		Name:       name,
+		StartTime:  start,
+		EndTime:    end,
+		DurationMS: dur,
+		StatusCode: statusCode,
+		StatusDesc: statusDesc,
+		Attributes: attrsStr,
+		Events:     eventsStr,
+	}, nil
+}
+
+// decodeJSONLineUseNumber decodes a JSON line preserving large numbers as json.Number
+func decodeJSONLineUseNumber(line string) (map[string]any, error) {
+	dec := json.NewDecoder(strings.NewReader(line))
+	dec.UseNumber()
+	var raw map[string]any
+	if err := dec.Decode(&raw); err != nil {
+		return nil, err
+	}
+	return raw, nil
 }
