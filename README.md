@@ -119,7 +119,7 @@ Configuration is done via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DB_TYPE` | `sqlite` | Database type (`sqlite` or `postgres`) |
-| `DB_CONNECTION` | `/data/traces.db` | Database connection string |
+| `DB_CONNECTION` | `./data/traces.db` | Database connection string (Docker overrides to `/data/traces.db`) |
 | `PORT` | `8080` | Server port |
 | `LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
 | `OTLP_ENABLED` | `true` | Enable OpenTelemetry OTLP receiver |
@@ -129,7 +129,7 @@ Configuration is done via environment variables:
 
 ```bash
 export DB_TYPE=sqlite
-export DB_CONNECTION=./traces.db
+export DB_CONNECTION=./data/traces.db
 ```
 
 ### PostgreSQL
@@ -219,10 +219,23 @@ Docker build also works from the root and will build the frontend and embed it:
 docker build -t ghcr.io/abi-jey/simple-traces:latest-dev .
 ```
 
+You can run from the repo root (recommended for debug tools and to ensure both frontend and backend assets are embedded correctly):
+
+```bash
+go run .
+```
+
+Or directly inside the backend folder:
+
 ```bash
 cd src/simple-traces/backend
 go run .
 ```
+
+### VS Code Debugging
+
+We include a `.vscode/launch.json` that debugs the root module. Use the configuration "Run Simple Traces (root)". This avoids
+errors like `undefined: InitLogger` that occur when trying to debug a single file without the full package context.
 
 ### Frontend
 
