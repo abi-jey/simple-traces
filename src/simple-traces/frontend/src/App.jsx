@@ -411,7 +411,7 @@ function App() {
       <header className="header">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
           <div>
-            <h1>Simple Traces {project ? <span className="project-badge">({project})</span> : null}</h1>
+            <h1>Simple Traces</h1>
             <div style={{ marginTop: '0.25rem' }}><ConnectionIndicator /></div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
