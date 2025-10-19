@@ -40,7 +40,7 @@ go.work.sum
 /data/
 
 # Backend binary
-simple-traces
+/simple-traces
 src/simple-traces/backend/simple-traces
 
 # Frontend
