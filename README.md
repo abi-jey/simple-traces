@@ -7,8 +7,9 @@ A lightweight LLM tracing tool with support for SQLite (no DB requirement) or Po
 - 🚀 **Simple API** - Single endpoint to collect LLM traces
 - 💾 **Flexible Storage** - SQLite (default, no setup) or PostgreSQL
 - 🎨 **Clean UI** - React-based dashboard to view and analyze traces
-- 🐳 **Docker Ready** - Easy deployment with Docker and docker-compose
+- 🐳 **Docker Ready** - Single container with embedded frontend
 - ⚡ **Fast & Lightweight** - Go backend with minimal dependencies
+- 📦 **No External Dependencies** - Frontend embedded in Go binary
 
 ## Quick Start
 
@@ -20,12 +21,21 @@ git clone https://github.com/abi-jey/simple-traces.git
 cd simple-traces
 ```
 
-2. Run with docker-compose:
+2. Build the Docker image:
 ```bash
-docker-compose up -d
+docker build -t simple-traces .
 ```
 
-3. Access the UI at http://localhost:8080
+3. Run the container:
+```bash
+# Interactive mode (see logs)
+docker run --rm -p 8080:8080 simple-traces
+
+# Detached mode (background)
+docker run -d -p 8080:8080 --name simple-traces simple-traces
+```
+
+4. Access the UI at http://localhost:8080
 
 ### Manual Setup
 
@@ -95,9 +105,8 @@ Configuration is done via environment variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DB_TYPE` | `sqlite` | Database type (`sqlite` or `postgres`) |
-| `DB_CONNECTION` | `./traces.db` | Database connection string |
+| `DB_CONNECTION` | `/data/traces.db` | Database connection string |
 | `PORT` | `8080` | Server port |
-| `FRONTEND_DIR` | `../frontend/dist` | Frontend build directory |
 
 ### SQLite (Default)
 
@@ -135,20 +144,44 @@ The frontend dev server will proxy API requests to the backend at `http://localh
 
 ## Docker Deployment
 
-### With SQLite (Default)
+The Docker image uses a multi-stage build that:
+1. Builds the React frontend using Node.js
+2. Embeds the built frontend into the Go binary
+3. Creates a minimal Alpine-based runtime image
+
+### Build the Image
 
 ```bash
-docker-compose up -d
+docker build -t simple-traces .
 ```
 
-Data will be persisted in the `./data` directory.
-
-### With PostgreSQL
-
-Edit `docker-compose.yml` and uncomment the PostgreSQL configuration section, then:
+### Run with SQLite (Default)
 
 ```bash
-docker-compose up -d
+# Run in interactive mode
+docker run --rm -p 8080:8080 simple-traces
+
+# Run in detached mode
+docker run -d -p 8080:8080 --name simple-traces simple-traces
+
+# With persistent storage (optional)
+docker run -d -p 8080:8080 -v $(pwd)/data:/data --name simple-traces simple-traces
+```
+
+### Run with PostgreSQL
+
+```bash
+docker run -d -p 8080:8080 \
+  -e DB_TYPE=postgres \
+  -e DB_CONNECTION="postgres://user:pass@host:5432/traces?sslmode=disable" \
+  --name simple-traces simple-traces
+```
+
+### Stop the Container
+
+```bash
+docker stop simple-traces
+docker rm simple-traces
 ```
 
 ## Project Structure
@@ -158,15 +191,26 @@ simple-traces/
 ├── backend/           # Go backend
 │   ├── main.go       # Main server code
 │   ├── database.go   # Database abstraction layer
+│   ├── static.go     # Embedded frontend files handler
 │   └── go.mod        # Go dependencies
 ├── frontend/          # React frontend
 │   ├── src/          # Source files
 │   ├── public/       # Static assets
 │   └── package.json  # Node dependencies
-├── Dockerfile         # Docker configuration
-├── docker-compose.yml # Docker Compose configuration
+├── Dockerfile         # Multi-stage Docker build
 └── README.md         # This file
 ```
+
+## Architecture
+
+The application uses a 3-stage Docker build:
+
+1. **Frontend Build Stage**: Compiles React app using Node.js LTS
+2. **Backend Build Stage**: Embeds frontend files into Go binary using `//go:embed`
+3. **Runtime Stage**: Minimal Alpine Linux image with only the Go binary
+
+Frontend files are embedded at build time, resulting in a single self-contained binary 
+with no external file dependencies.
 
 ## API Schema
 
