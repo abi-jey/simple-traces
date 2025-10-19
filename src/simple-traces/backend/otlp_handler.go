@@ -359,61 +359,7 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 			continue
 		}
 		a := SpanAttribute{SpanID: spanRow.SpanID, TraceID: spanRow.TraceID, Key: k, Type: AttrType(v)}
-		switch a.Type {
-		case "string":
-			s := fmt.Sprintf("%v", v)
-			a.StringVal = &s
-		case "bool":
-			if b, ok := v.(bool); ok {
-				a.BoolVal = &b
-			} else {
-				// fallback to string
-				s := fmt.Sprintf("%v", v)
-				a.Type = "string"
-				a.StringVal = &s
-			}
-		case "int":
-			switch n := v.(type) {
-			case int64:
-				a.IntVal = &n
-			case int:
-				nn := int64(n)
-				a.IntVal = &nn
-			case float64:
-				nn := int64(n)
-				a.IntVal = &nn
-			default:
-				s := fmt.Sprintf("%v", v)
-				a.Type = "string"
-				a.StringVal = &s
-			}
-		case "float":
-			switch n := v.(type) {
-			case float64:
-				a.FloatVal = &n
-			case float32:
-				f := float64(n)
-				a.FloatVal = &f
-			case int64:
-				f := float64(n)
-				a.FloatVal = &f
-			case int:
-				f := float64(n)
-				a.FloatVal = &f
-			default:
-				s := fmt.Sprintf("%v", v)
-				a.Type = "string"
-				a.StringVal = &s
-			}
-		case "array", "object", "null":
-			b, _ := json.Marshal(v)
-			s := string(b)
-			a.JSONVal = &s
-		default:
-			s := fmt.Sprintf("%v", v)
-			a.Type = "string"
-			a.StringVal = &s
-		}
+		setSpanAttributeValue(&a, v)
 		attrRows = append(attrRows, a)
 	}
 

@@ -234,22 +234,8 @@ func createTraceHandler(db Database, logger *Logger) http.HandlerFunc {
 
 func getTracesHandler(db Database, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Optional pagination: limit (default 100), before (RFC3339 timestamp)
-		q := r.URL.Query()
-		limit := 100
-		if s := strings.TrimSpace(q.Get("limit")); s != "" {
-			if v, err := strconv.Atoi(s); err == nil && v > 0 {
-				limit = v
-			}
-		}
-		var before time.Time
-		if sb := strings.TrimSpace(q.Get("before")); sb != "" {
-			if t, err := time.Parse(time.RFC3339Nano, sb); err == nil {
-				before = t
-			} else if t, err := time.Parse(time.RFC3339, sb); err == nil {
-				before = t
-			}
-		}
+		limit := parseLimit(r.URL.Query().Get("limit"), 100)
+		before := parseTimestamp(r.URL.Query().Get("before"))
 
 		logger.Debug("Fetching traces with limit=%d before=%v", limit, before)
 		traces, err := db.GetTracesPaginated(limit, before)
@@ -327,21 +313,9 @@ func deleteTraceHandler(db Database, logger *Logger) http.HandlerFunc {
 // getSpansHandler returns spans ordered by start_time DESC with optional pagination
 func getSpansHandler(db Database, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		limit := 100
-		if s := strings.TrimSpace(q.Get("limit")); s != "" {
-			if v, err := strconv.Atoi(s); err == nil && v > 0 {
-				limit = v
-			}
-		}
-		var before time.Time
-		if sb := strings.TrimSpace(q.Get("before")); sb != "" {
-			if t, err := time.Parse(time.RFC3339Nano, sb); err == nil {
-				before = t
-			} else if t, err := time.Parse(time.RFC3339, sb); err == nil {
-				before = t
-			}
-		}
+		limit := parseLimit(r.URL.Query().Get("limit"), 100)
+		before := parseTimestamp(r.URL.Query().Get("before"))
+		
 		spans, err := db.GetSpans(limit, before)
 		if err != nil {
 			logger.Error("Failed to get spans: %v", err)
@@ -462,19 +436,7 @@ func importSpansJSONLHandler(db Database, logger *Logger) http.HandlerFunc {
 		}
 		// If we derived any conversation ids, propagate them to all spans with the same trace_id
 		if len(convAgg) > 0 {
-			for cid := range convAgg {
-				// for each trace present in this batch, propagate
-				seen := map[string]struct{}{}
-				for _, sp := range spans {
-					if _, ok := seen[sp.TraceID]; ok {
-						continue
-					}
-					seen[sp.TraceID] = struct{}{}
-					if _, err := db.PropagateConversationID(sp.TraceID, cid); err != nil {
-						logger.Warn("propagate conversation id failed trace=%s cid=%s: %v", sp.TraceID, cid, err)
-					}
-				}
-			}
+			propagateConversationIDs(db, logger, spans, convAgg)
 		}
 		if len(convAgg) > 0 {
 			updates := make([]ConversationUpdate, 0, len(convAgg))
@@ -558,62 +520,8 @@ func spanFromRaw(raw map[string]any) (Span, []SpanAttribute, error) {
 		}
 		// Build typed attribute rows
 		for k, v := range flat {
-			at := AttrType(v)
-			a := SpanAttribute{SpanID: spanID, TraceID: traceID, Key: k, Type: at}
-			switch at {
-			case "string":
-				s := fmt.Sprintf("%v", v)
-				a.StringVal = &s
-			case "bool":
-				if b, ok := v.(bool); ok {
-					a.BoolVal = &b
-				} else {
-					s := fmt.Sprintf("%v", v)
-					a.Type = "string"
-					a.StringVal = &s
-				}
-			case "int":
-				switch n := v.(type) {
-				case int64:
-					a.IntVal = &n
-				case int:
-					nn := int64(n)
-					a.IntVal = &nn
-				case float64:
-					nn := int64(n)
-					a.IntVal = &nn
-				default:
-					s := fmt.Sprintf("%v", v)
-					a.Type = "string"
-					a.StringVal = &s
-				}
-			case "float":
-				switch n := v.(type) {
-				case float64:
-					a.FloatVal = &n
-				case float32:
-					f := float64(n)
-					a.FloatVal = &f
-				case int64:
-					f := float64(n)
-					a.FloatVal = &f
-				case int:
-					f := float64(n)
-					a.FloatVal = &f
-				default:
-					s := fmt.Sprintf("%v", v)
-					a.Type = "string"
-					a.StringVal = &s
-				}
-			case "array", "object", "null":
-				b, _ := json.Marshal(v)
-				s := string(b)
-				a.JSONVal = &s
-			default:
-				s := fmt.Sprintf("%v", v)
-				a.Type = "string"
-				a.StringVal = &s
-			}
+			a := SpanAttribute{SpanID: spanID, TraceID: traceID, Key: k, Type: AttrType(v)}
+			setSpanAttributeValue(&a, v)
 			attrRows = append(attrRows, a)
 		}
 	}
@@ -653,24 +561,16 @@ func decodeJSONLineUseNumber(line string) (map[string]any, error) {
 func getTraceGroupsHandler(db Database, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		limit := 100
-		if s := strings.TrimSpace(q.Get("limit")); s != "" {
-			if v, err := strconv.Atoi(s); err == nil && v > 0 {
-				limit = v
-			}
-		}
-		var before time.Time
-		if sb := strings.TrimSpace(q.Get("before")); sb != "" {
-			if t, err := time.Parse(time.RFC3339Nano, sb); err == nil {
-				before = t
-			} else if t, err := time.Parse(time.RFC3339, sb); err == nil {
-				before = t
-			}
-		}
+		limit := parseLimit(q.Get("limit"), 100)
+		before := parseTimestamp(q.Get("before"))
 		search := strings.TrimSpace(q.Get("q"))
-		groups, err := db.GetTraceGroups(limit, before)
+		
+		var groups []TraceGroup
+		var err error
 		if search != "" {
 			groups, err = db.GetTraceGroupsWithSearch(limit, before, search)
+		} else {
+			groups, err = db.GetTraceGroups(limit, before)
 		}
 		if err != nil {
 			logger.Error("Failed to get trace groups: %v", err)
@@ -687,16 +587,16 @@ func getTraceGroupSpansHandler(db Database, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
 		traceID := vars["trace_id"]
-		limit := 2000
-		if s := strings.TrimSpace(r.URL.Query().Get("limit")); s != "" {
-			if v, err := strconv.Atoi(s); err == nil && v > 0 {
-				limit = v
-			}
-		}
-		search := strings.TrimSpace(r.URL.Query().Get("q"))
-		spans, err := db.GetTraceGroupSpans(traceID, limit)
+		q := r.URL.Query()
+		limit := parseLimit(q.Get("limit"), 2000)
+		search := strings.TrimSpace(q.Get("q"))
+		
+		var spans []Span
+		var err error
 		if search != "" {
 			spans, err = db.GetTraceGroupSpansWithSearch(traceID, limit, search)
+		} else {
+			spans, err = db.GetTraceGroupSpans(traceID, limit)
 		}
 		if err != nil {
 			logger.Error("Failed to get group spans: %v", err)
@@ -739,24 +639,16 @@ func deleteTraceGroupHandler(db Database, logger *Logger) http.HandlerFunc {
 func getConversationsHandler(db Database, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		limit := 100
-		if s := strings.TrimSpace(q.Get("limit")); s != "" {
-			if v, err := strconv.Atoi(s); err == nil && v > 0 {
-				limit = v
-			}
-		}
-		var before time.Time
-		if sb := strings.TrimSpace(q.Get("before")); sb != "" {
-			if t, err := time.Parse(time.RFC3339Nano, sb); err == nil {
-				before = t
-			} else if t, err := time.Parse(time.RFC3339, sb); err == nil {
-				before = t
-			}
-		}
+		limit := parseLimit(q.Get("limit"), 100)
+		before := parseTimestamp(q.Get("before"))
 		search := strings.TrimSpace(q.Get("q"))
-		convs, err := db.GetConversations(limit, before)
+		
+		var convs []Conversation
+		var err error
 		if search != "" {
 			convs, err = db.GetConversationsWithSearch(limit, before, search)
+		} else {
+			convs, err = db.GetConversations(limit, before)
 		}
 		if err != nil {
 			logger.Error("Failed to get conversations: %v", err)
@@ -793,5 +685,106 @@ func deleteConversationHandler(db Database, logger *Logger) http.HandlerFunc { /
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "deleted_spans": nSpans})
+	}
+}
+
+// parseLimit parses a limit parameter with a default value
+func parseLimit(s string, defaultLimit int) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return defaultLimit
+	}
+	if v, err := strconv.Atoi(s); err == nil && v > 0 {
+		return v
+	}
+	return defaultLimit
+}
+
+// parseTimestamp parses a timestamp parameter from RFC3339 or RFC3339Nano format
+func parseTimestamp(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	return time.Time{}
+}
+
+// setSpanAttributeValue sets the appropriate value field on a SpanAttribute based on its type
+func setSpanAttributeValue(a *SpanAttribute, v any) {
+	switch a.Type {
+	case "string":
+		s := fmt.Sprintf("%v", v)
+		a.StringVal = &s
+	case "bool":
+		if b, ok := v.(bool); ok {
+			a.BoolVal = &b
+		} else {
+			s := fmt.Sprintf("%v", v)
+			a.Type = "string"
+			a.StringVal = &s
+		}
+	case "int":
+		switch n := v.(type) {
+		case int64:
+			a.IntVal = &n
+		case int:
+			nn := int64(n)
+			a.IntVal = &nn
+		case float64:
+			nn := int64(n)
+			a.IntVal = &nn
+		default:
+			s := fmt.Sprintf("%v", v)
+			a.Type = "string"
+			a.StringVal = &s
+		}
+	case "float":
+		switch n := v.(type) {
+		case float64:
+			a.FloatVal = &n
+		case float32:
+			f := float64(n)
+			a.FloatVal = &f
+		case int64:
+			f := float64(n)
+			a.FloatVal = &f
+		case int:
+			f := float64(n)
+			a.FloatVal = &f
+		default:
+			s := fmt.Sprintf("%v", v)
+			a.Type = "string"
+			a.StringVal = &s
+		}
+	case "array", "object", "null":
+		b, _ := json.Marshal(v)
+		s := string(b)
+		a.JSONVal = &s
+	default:
+		s := fmt.Sprintf("%v", v)
+		a.Type = "string"
+		a.StringVal = &s
+	}
+}
+
+// propagateConversationIDs propagates conversation IDs to all spans in their trace groups
+func propagateConversationIDs(db Database, logger *Logger, spans []Span, convAgg map[string]*ConversationUpdate) {
+	for cid := range convAgg {
+		seen := make(map[string]struct{})
+		for _, sp := range spans {
+			if _, ok := seen[sp.TraceID]; ok {
+				continue
+			}
+			seen[sp.TraceID] = struct{}{}
+			if _, err := db.PropagateConversationID(sp.TraceID, cid); err != nil {
+				logger.Warn("propagate conversation id failed trace=%s cid=%s: %v", sp.TraceID, cid, err)
+			}
+		}
 	}
 }

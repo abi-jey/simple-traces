@@ -156,67 +156,50 @@ var conversationIDKeys = []string{
 
 // Build SQLite SQL expression to compute group_id from span_attributes, fallback to spans.trace_id.
 func sqliteGroupIDExpr() string {
-	// Inlines constants (safe: controlled list)
-	keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
-	// Priority order via CASE, 1..n
-	var b strings.Builder
-	b.WriteString("COALESCE(")
-	// prefer string_val
-	b.WriteString("(SELECT string_val FROM span_attributes sa1 WHERE sa1.span_id = s.span_id AND sa1.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE sa1.key ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN '%s' THEN %d ", k, i+1)
-	}
-	b.WriteString("END LIMIT 1),")
-	// then int_val
-	b.WriteString("(SELECT CAST(int_val AS TEXT) FROM span_attributes sa2 WHERE sa2.span_id = s.span_id AND sa2.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE sa2.key ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN '%s' THEN %d ", k, i+1)
-	}
-	b.WriteString("END LIMIT 1),")
-	// then float_val
-	b.WriteString("(SELECT CAST(float_val AS TEXT) FROM span_attributes sa3 WHERE sa3.span_id = s.span_id AND sa3.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE sa3.key ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN '%s' THEN %d ", k, i+1)
-	}
-	b.WriteString("END LIMIT 1),")
-	// fallback
-	b.WriteString("s.trace_id)")
-	return b.String()
+	return buildGroupIDExpr(conversationIDKeys, "CAST(%s AS TEXT)", "sa%d.key")
 }
 
 // Build Postgres SQL expression for group_id
 func pgGroupIDExpr() string {
-	keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
+	return buildGroupIDExpr(conversationIDKeys, "(%s)::text", "sa%d.key = '%s'")
+}
+
+// buildGroupIDExpr creates a COALESCE expression for conversation ID lookup
+func buildGroupIDExpr(keys []string, castFmt, caseFmt string) string {
+	keysList := "('" + strings.Join(keys, "','") + "')"
 	var b strings.Builder
 	b.WriteString("COALESCE(")
-	b.WriteString("(SELECT string_val FROM span_attributes sa1 WHERE sa1.span_id = s.span_id AND sa1.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN sa1.key = '%s' THEN %d ", k, i+1)
+	
+	// Try string_val, int_val, float_val in order
+	for i, valType := range []string{"string_val", "int_val", "float_val"} {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString("(SELECT ")
+		if valType != "string_val" {
+			b.WriteString(fmt.Sprintf(castFmt, valType))
+		} else {
+			b.WriteString(valType)
+		}
+		b.WriteString(fmt.Sprintf(" FROM span_attributes sa%d WHERE sa%d.span_id = s.span_id AND sa%d.key IN ", i+1, i+1, i+1))
+		b.WriteString(keysList)
+		b.WriteString(" ORDER BY CASE ")
+		
+		// Build case expression based on format
+		if strings.Contains(caseFmt, "=") {
+			// PostgreSQL style: sa.key = 'value'
+			for j, k := range keys {
+				fmt.Fprintf(&b, "WHEN sa%d.key = '%s' THEN %d ", i+1, k, j+1)
+			}
+		} else {
+			// SQLite style: sa.key
+			for j, k := range keys {
+				fmt.Fprintf(&b, "WHEN '%s' THEN %d ", k, j+1)
+			}
+		}
+		b.WriteString("END LIMIT 1)")
 	}
-	b.WriteString("END LIMIT 1),")
-	b.WriteString("(SELECT (int_val)::text FROM span_attributes sa2 WHERE sa2.span_id = s.span_id AND sa2.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN sa2.key = '%s' THEN %d ", k, i+1)
-	}
-	b.WriteString("END LIMIT 1),")
-	b.WriteString("(SELECT (float_val)::text FROM span_attributes sa3 WHERE sa3.span_id = s.span_id AND sa3.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN sa3.key = '%s' THEN %d ", k, i+1)
-	}
-	b.WriteString("END LIMIT 1),")
-	b.WriteString("s.trace_id)")
+	b.WriteString(",s.trace_id)")
 	return b.String()
 }
 
@@ -939,7 +922,7 @@ func (s *SQLiteDB) GetTraceGroupSpansWithSearch(traceID string, limit int, searc
 }
 
 // parseSQLiteTime attempts to parse common SQLite datetime string formats into time.Time
-func parseSQLiteTime(s string) (time.Time, error) { // fmt: skip
+func parseSQLiteTime(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, fmt.Errorf("empty time string")
 	}
@@ -947,20 +930,17 @@ func parseSQLiteTime(s string) (time.Time, error) { // fmt: skip
 	layouts := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
-		"2006-01-02 15:04:05Z07:00",
-		"2006-01-02 15:04:05", // default go-sqlite3 format often
 		"2006-01-02 15:04:05.999999999Z07:00",
 		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05",
 	}
-	var lastErr error
 	for _, layout := range layouts {
 		if t, err := time.Parse(layout, s); err == nil {
 			return t, nil
-		} else {
-			lastErr = err
 		}
 	}
-	return time.Time{}, lastErr
+	return time.Time{}, fmt.Errorf("unable to parse time: %s", s)
 }
 
 func (s *SQLiteDB) GetTraceGroupSpans(traceID string, limit int) ([]Span, error) {
