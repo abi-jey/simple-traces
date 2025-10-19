@@ -154,69 +154,60 @@ var conversationIDKeys = []string{
 	"thread.id",
 }
 
+// Preferred keys for model extraction
+var modelKeys = []string{
+	"llm.model",
+	"gen_ai.request.model",
+	"resource.service.name",
+	"agent.model",
+}
+
 // Build SQLite SQL expression to compute group_id from span_attributes, fallback to spans.trace_id.
 func sqliteGroupIDExpr() string {
-	// Inlines constants (safe: controlled list)
-	keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
-	// Priority order via CASE, 1..n
-	var b strings.Builder
-	b.WriteString("COALESCE(")
-	// prefer string_val
-	b.WriteString("(SELECT string_val FROM span_attributes sa1 WHERE sa1.span_id = s.span_id AND sa1.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE sa1.key ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN '%s' THEN %d ", k, i+1)
-	}
-	b.WriteString("END LIMIT 1),")
-	// then int_val
-	b.WriteString("(SELECT CAST(int_val AS TEXT) FROM span_attributes sa2 WHERE sa2.span_id = s.span_id AND sa2.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE sa2.key ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN '%s' THEN %d ", k, i+1)
-	}
-	b.WriteString("END LIMIT 1),")
-	// then float_val
-	b.WriteString("(SELECT CAST(float_val AS TEXT) FROM span_attributes sa3 WHERE sa3.span_id = s.span_id AND sa3.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE sa3.key ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN '%s' THEN %d ", k, i+1)
-	}
-	b.WriteString("END LIMIT 1),")
-	// fallback
-	b.WriteString("s.trace_id)")
-	return b.String()
+	return buildGroupIDExpr(conversationIDKeys, "CAST(%s AS TEXT)", "sa%d.key")
 }
 
 // Build Postgres SQL expression for group_id
 func pgGroupIDExpr() string {
-	keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
+	return buildGroupIDExpr(conversationIDKeys, "(%s)::text", "sa%d.key = '%s'")
+}
+
+// buildGroupIDExpr creates a COALESCE expression for conversation ID lookup
+func buildGroupIDExpr(keys []string, castFmt, caseFmt string) string {
+	keysList := "('" + strings.Join(keys, "','") + "')"
 	var b strings.Builder
 	b.WriteString("COALESCE(")
-	b.WriteString("(SELECT string_val FROM span_attributes sa1 WHERE sa1.span_id = s.span_id AND sa1.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN sa1.key = '%s' THEN %d ", k, i+1)
+	
+	// Try string_val, int_val, float_val in order
+	for i, valType := range []string{"string_val", "int_val", "float_val"} {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString("(SELECT ")
+		if valType != "string_val" {
+			b.WriteString(fmt.Sprintf(castFmt, valType))
+		} else {
+			b.WriteString(valType)
+		}
+		b.WriteString(fmt.Sprintf(" FROM span_attributes sa%d WHERE sa%d.span_id = s.span_id AND sa%d.key IN ", i+1, i+1, i+1))
+		b.WriteString(keysList)
+		b.WriteString(" ORDER BY CASE ")
+		
+		// Build case expression based on format
+		if strings.Contains(caseFmt, "=") {
+			// PostgreSQL style: sa.key = 'value'
+			for j, k := range keys {
+				fmt.Fprintf(&b, "WHEN sa%d.key = '%s' THEN %d ", i+1, k, j+1)
+			}
+		} else {
+			// SQLite style: sa.key
+			for j, k := range keys {
+				fmt.Fprintf(&b, "WHEN '%s' THEN %d ", k, j+1)
+			}
+		}
+		b.WriteString("END LIMIT 1)")
 	}
-	b.WriteString("END LIMIT 1),")
-	b.WriteString("(SELECT (int_val)::text FROM span_attributes sa2 WHERE sa2.span_id = s.span_id AND sa2.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN sa2.key = '%s' THEN %d ", k, i+1)
-	}
-	b.WriteString("END LIMIT 1),")
-	b.WriteString("(SELECT (float_val)::text FROM span_attributes sa3 WHERE sa3.span_id = s.span_id AND sa3.key IN ")
-	b.WriteString(keysList)
-	b.WriteString(" ORDER BY CASE ")
-	for i, k := range conversationIDKeys {
-		fmt.Fprintf(&b, "WHEN sa3.key = '%s' THEN %d ", k, i+1)
-	}
-	b.WriteString("END LIMIT 1),")
-	b.WriteString("s.trace_id)")
+	b.WriteString(",s.trace_id)")
 	return b.String()
 }
 
@@ -684,7 +675,11 @@ func (s *SQLiteDB) BatchUpsertConversations(updates []ConversationUpdate) error 
 	}
 	defer stmt.Close()
 	for _, u := range updates {
-		_, err := stmt.Exec(u.ID, u.ID, u.Start, u.End, u.ID, u.Count, nullableString(u.Model), u.ID)
+		var modelPtr *string
+		if m := strings.TrimSpace(u.Model); m != "" {
+			modelPtr = &m
+		}
+		_, err := stmt.Exec(u.ID, u.ID, u.Start, u.End, u.ID, u.Count, modelPtr, u.ID)
 		if err != nil {
 			tx.Rollback()
 			return err
@@ -697,37 +692,29 @@ func (s *SQLiteDB) GetConversations(limit int, before time.Time) ([]Conversation
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
+	
+	query := `
+		SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
+		FROM conversations`
+	
+	if !before.IsZero() {
+		query += ` WHERE last_end_time < ?`
+	}
+	query += ` ORDER BY last_end_time DESC LIMIT ?`
+	
 	var rows *sql.Rows
 	var err error
 	if before.IsZero() {
-		rows, err = s.db.Query(`
-			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
-			FROM conversations
-			ORDER BY last_end_time DESC
-			LIMIT ?
-		`, limit)
+		rows, err = s.db.Query(query, limit)
 	} else {
-		rows, err = s.db.Query(`
-			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
-			FROM conversations
-			WHERE last_end_time < ?
-			ORDER BY last_end_time DESC
-			LIMIT ?
-		`, before, limit)
+		rows, err = s.db.Query(query, before, limit)
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]Conversation, 0, limit)
-	for rows.Next() {
-		var c Conversation
-		if err := rows.Scan(&c.ID, &c.FirstStartTime, &c.LastEndTime, &c.SpanCount, &c.Model); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, nil
+	
+	return scanConversations(rows, limit)
 }
 
 // GetConversationsWithSearch filters conversations by id or model using LIKE, ordered by last_end_time DESC
@@ -736,38 +723,30 @@ func (s *SQLiteDB) GetConversationsWithSearch(limit int, before time.Time, searc
 		limit = 100
 	}
 	pattern := "%" + strings.ToLower(strings.TrimSpace(search)) + "%"
+	
+	query := `
+		SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
+		FROM conversations
+		WHERE lower(id) LIKE ? OR lower(coalesce(model, '')) LIKE ?`
+	
+	if !before.IsZero() {
+		query += ` AND last_end_time < ?`
+	}
+	query += ` ORDER BY last_end_time DESC LIMIT ?`
+	
 	var rows *sql.Rows
 	var err error
 	if before.IsZero() {
-		rows, err = s.db.Query(`
-			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
-			FROM conversations
-			WHERE lower(id) LIKE ? OR lower(coalesce(model, '')) LIKE ?
-			ORDER BY last_end_time DESC
-			LIMIT ?
-		`, pattern, pattern, limit)
+		rows, err = s.db.Query(query, pattern, pattern, limit)
 	} else {
-		rows, err = s.db.Query(`
-			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
-			FROM conversations
-			WHERE (lower(id) LIKE ? OR lower(coalesce(model, '')) LIKE ?) AND last_end_time < ?
-			ORDER BY last_end_time DESC
-			LIMIT ?
-		`, pattern, pattern, before, limit)
+		rows, err = s.db.Query(query, pattern, pattern, before, limit)
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]Conversation, 0, limit)
-	for rows.Next() {
-		var c Conversation
-		if err := rows.Scan(&c.ID, &c.FirstStartTime, &c.LastEndTime, &c.SpanCount, &c.Model); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, nil
+	
+	return scanConversations(rows, limit)
 }
 
 func (s *SQLiteDB) GetTraceGroups(limit int, before time.Time) ([]TraceGroup, error) {
@@ -939,7 +918,7 @@ func (s *SQLiteDB) GetTraceGroupSpansWithSearch(traceID string, limit int, searc
 }
 
 // parseSQLiteTime attempts to parse common SQLite datetime string formats into time.Time
-func parseSQLiteTime(s string) (time.Time, error) { // fmt: skip
+func parseSQLiteTime(s string) (time.Time, error) {
 	if s == "" {
 		return time.Time{}, fmt.Errorf("empty time string")
 	}
@@ -947,20 +926,17 @@ func parseSQLiteTime(s string) (time.Time, error) { // fmt: skip
 	layouts := []string{
 		time.RFC3339Nano,
 		time.RFC3339,
-		"2006-01-02 15:04:05Z07:00",
-		"2006-01-02 15:04:05", // default go-sqlite3 format often
 		"2006-01-02 15:04:05.999999999Z07:00",
 		"2006-01-02 15:04:05.999999999",
+		"2006-01-02 15:04:05Z07:00",
+		"2006-01-02 15:04:05",
 	}
-	var lastErr error
 	for _, layout := range layouts {
 		if t, err := time.Parse(layout, s); err == nil {
 			return t, nil
-		} else {
-			lastErr = err
 		}
 	}
-	return time.Time{}, lastErr
+	return time.Time{}, fmt.Errorf("unable to parse time: %s", s)
 }
 
 func (s *SQLiteDB) GetTraceGroupSpans(traceID string, limit int) ([]Span, error) {
@@ -987,6 +963,19 @@ func (s *SQLiteDB) GetTraceGroupSpans(traceID string, limit int) ([]Span, error)
 			return nil, err
 		}
 		out = append(out, sp)
+	}
+	return out, nil
+}
+
+// scanConversations is a helper to scan conversation rows
+func scanConversations(rows *sql.Rows, capacity int) ([]Conversation, error) {
+	out := make([]Conversation, 0, capacity)
+	for rows.Next() {
+		var c Conversation
+		if err := rows.Scan(&c.ID, &c.FirstStartTime, &c.LastEndTime, &c.SpanCount, &c.Model); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
 	}
 	return out, nil
 }
@@ -1303,37 +1292,29 @@ func (p *PostgresDB) GetConversations(limit int, before time.Time) ([]Conversati
 	if limit <= 0 || limit > 1000 {
 		limit = 100
 	}
+	
+	query := `
+		SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
+		FROM conversations`
+	
+	if !before.IsZero() {
+		query += ` WHERE last_end_time < $1`
+	}
+	query += ` ORDER BY last_end_time DESC LIMIT `
+	
 	var rows *sql.Rows
 	var err error
 	if before.IsZero() {
-		rows, err = p.db.Query(`
-			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
-			FROM conversations
-			ORDER BY last_end_time DESC
-			LIMIT $1
-		`, limit)
+		rows, err = p.db.Query(query+`$1`, limit)
 	} else {
-		rows, err = p.db.Query(`
-			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
-			FROM conversations
-			WHERE last_end_time < $1
-			ORDER BY last_end_time DESC
-			LIMIT $2
-		`, before, limit)
+		rows, err = p.db.Query(query+`$2`, before, limit)
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]Conversation, 0, limit)
-	for rows.Next() {
-		var c Conversation
-		if err := rows.Scan(&c.ID, &c.FirstStartTime, &c.LastEndTime, &c.SpanCount, &c.Model); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, nil
+	
+	return scanConversations(rows, limit)
 }
 
 func (p *PostgresDB) GetConversationsWithSearch(limit int, before time.Time, search string) ([]Conversation, error) {
@@ -1341,47 +1322,30 @@ func (p *PostgresDB) GetConversationsWithSearch(limit int, before time.Time, sea
 		limit = 100
 	}
 	pattern := "%" + strings.TrimSpace(search) + "%"
+	
+	query := `
+		SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
+		FROM conversations
+		WHERE id ILIKE $1 OR coalesce(model, '') ILIKE $1`
+	
+	if !before.IsZero() {
+		query += ` AND last_end_time < $2`
+	}
+	query += ` ORDER BY last_end_time DESC LIMIT `
+	
 	var rows *sql.Rows
 	var err error
 	if before.IsZero() {
-		rows, err = p.db.Query(`
-			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
-			FROM conversations
-			WHERE id ILIKE $1 OR coalesce(model, '') ILIKE $1
-			ORDER BY last_end_time DESC
-			LIMIT $2
-		`, pattern, limit)
+		rows, err = p.db.Query(query+`$2`, pattern, limit)
 	} else {
-		rows, err = p.db.Query(`
-			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
-			FROM conversations
-			WHERE (id ILIKE $1 OR coalesce(model, '') ILIKE $1) AND last_end_time < $2
-			ORDER BY last_end_time DESC
-			LIMIT $3
-		`, pattern, before, limit)
+		rows, err = p.db.Query(query+`$3`, pattern, before, limit)
 	}
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]Conversation, 0, limit)
-	for rows.Next() {
-		var c Conversation
-		if err := rows.Scan(&c.ID, &c.FirstStartTime, &c.LastEndTime, &c.SpanCount, &c.Model); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, nil
-}
-
-// helper to turn empty string into NULL for model in SQLite upsert
-func nullableString(s string) *string {
-	t := strings.TrimSpace(s)
-	if t == "" {
-		return nil
-	}
-	return &t
+	
+	return scanConversations(rows, limit)
 }
 
 // BatchUpsertSpanAttributes stores flattened attributes with proper types
@@ -1628,16 +1592,11 @@ func (p *PostgresDB) GetTraceGroupSpans(traceID string, limit int) ([]Span, erro
 
 // extractModelFromAttrJSON tries to find a model key in spans.attributes JSON
 func extractModelFromAttrJSON(attrJSON string) string {
-	// Parse small JSON into map and probe known model keys
-	type anyMap = map[string]interface{}
-	var m anyMap
+	var m map[string]interface{}
 	if err := json.Unmarshal([]byte(attrJSON), &m); err != nil {
 		return ""
 	}
-	keys := []string{
-		"llm.model", "gen_ai.request.model", "resource.service.name", "agent.model",
-	}
-	for _, k := range keys {
+	for _, k := range modelKeys {
 		if v, ok := m[k]; ok {
 			return fmt.Sprintf("%v", v)
 		}

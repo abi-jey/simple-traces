@@ -82,27 +82,8 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				spansProcessed++
 
 				// derive conversation id
-				convID := deriveConversationID(spanAttrs)
-				if convID != "" {
-					cu := convAgg[convID]
-					start := spanRow.StartTime
-					end := spanRow.EndTime
-					// try model from traceEntry
-					model := traceEntry.Model
-					if cu == nil {
-						convAgg[convID] = &ConversationUpdate{ID: convID, Start: start, End: end, Count: 1, Model: model}
-					} else {
-						if start.Before(cu.Start) {
-							cu.Start = start
-						}
-						if end.After(cu.End) {
-							cu.End = end
-						}
-						cu.Count += 1
-						if strings.TrimSpace(cu.Model) == "" && strings.TrimSpace(model) != "" {
-							cu.Model = model
-						}
-					}
+				if convID := deriveConversationID(spanAttrs); convID != "" {
+					aggregateConversation(convAgg, convID, spanRow, traceEntry.Model)
 				}
 			}
 		}
@@ -118,17 +99,11 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// upsert conversations
 	if len(convAgg) > 0 {
+		propagateConversationIDs(h.db, h.logger, spanRows, convAgg)
+		
 		updates := make([]ConversationUpdate, 0, len(convAgg))
-		for cid, v := range convAgg {
+		for _, v := range convAgg {
 			updates = append(updates, *v)
-			// also propagate this conversation id to all spans that share the same trace id if missing
-			// we use the span trace_id as fallback linkage: update after inserts
-			for _, sp := range spanRows {
-				// propagate for spans that occurred in this batch with the same conversation id found
-				// Note: deriveConversationID used attributes only; here we ensure every span under the same OTLP trace
-				// gets the conv id if not already present.
-				_, _ = h.db.PropagateConversationID(sp.TraceID, cid)
-			}
 		}
 		if err := h.db.BatchUpsertConversations(updates); err != nil {
 			h.logger.Error("Failed to upsert conversations: %v", err)
@@ -214,19 +189,17 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 
 	// Extract model information from attributes (if available)
 	model := "unknown"
+	for _, key := range modelKeys {
+		if modelAttr, ok := attrs[key]; ok {
+			model = fmt.Sprintf("%v", modelAttr)
+			break
+		}
+	}
+	
 	input := ""
 	output := ""
 	promptTokens := 0
 	outputTokens := 0
-
-	// Check for common LLM-related attributes
-	if modelAttr, ok := attrs["llm.model"]; ok {
-		model = fmt.Sprintf("%v", modelAttr)
-	} else if modelAttr, ok := attrs["gen_ai.request.model"]; ok {
-		model = fmt.Sprintf("%v", modelAttr)
-	} else if modelAttr, ok := attrs["resource.service.name"]; ok {
-		model = fmt.Sprintf("%v", modelAttr)
-	}
 
 	if inputAttr, ok := attrs["llm.input"]; ok {
 		input = fmt.Sprintf("%v", inputAttr)
@@ -359,61 +332,7 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 			continue
 		}
 		a := SpanAttribute{SpanID: spanRow.SpanID, TraceID: spanRow.TraceID, Key: k, Type: AttrType(v)}
-		switch a.Type {
-		case "string":
-			s := fmt.Sprintf("%v", v)
-			a.StringVal = &s
-		case "bool":
-			if b, ok := v.(bool); ok {
-				a.BoolVal = &b
-			} else {
-				// fallback to string
-				s := fmt.Sprintf("%v", v)
-				a.Type = "string"
-				a.StringVal = &s
-			}
-		case "int":
-			switch n := v.(type) {
-			case int64:
-				a.IntVal = &n
-			case int:
-				nn := int64(n)
-				a.IntVal = &nn
-			case float64:
-				nn := int64(n)
-				a.IntVal = &nn
-			default:
-				s := fmt.Sprintf("%v", v)
-				a.Type = "string"
-				a.StringVal = &s
-			}
-		case "float":
-			switch n := v.(type) {
-			case float64:
-				a.FloatVal = &n
-			case float32:
-				f := float64(n)
-				a.FloatVal = &f
-			case int64:
-				f := float64(n)
-				a.FloatVal = &f
-			case int:
-				f := float64(n)
-				a.FloatVal = &f
-			default:
-				s := fmt.Sprintf("%v", v)
-				a.Type = "string"
-				a.StringVal = &s
-			}
-		case "array", "object", "null":
-			b, _ := json.Marshal(v)
-			s := string(b)
-			a.JSONVal = &s
-		default:
-			s := fmt.Sprintf("%v", v)
-			a.Type = "string"
-			a.StringVal = &s
-		}
+		setSpanAttributeValue(&a, v)
 		attrRows = append(attrRows, a)
 	}
 
