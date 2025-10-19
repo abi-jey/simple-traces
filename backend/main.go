@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -91,7 +92,7 @@ func loadConfig() Config {
 		Port:         getEnv("PORT", "8080"),
 		FrontendDir:  getEnv("FRONTEND_DIR", "../frontend/dist"),
 		LogLevel:     getEnv("LOG_LEVEL", "INFO"),
-		OTLPEnabled:  getEnv("OTLP_ENABLED", "true") == "true",
+		OTLPEnabled:  parseBool(getEnv("OTLP_ENABLED", "true")),
 		OTLPEndpoint: getEnv("OTLP_ENDPOINT", ":4318"),
 	}
 	
@@ -100,6 +101,11 @@ func loadConfig() Config {
 	}
 	
 	return config
+}
+
+func parseBool(s string) bool {
+	s = strings.ToLower(strings.TrimSpace(s))
+	return s == "true" || s == "1" || s == "yes" || s == "on"
 }
 
 func getEnv(key, defaultValue string) string {

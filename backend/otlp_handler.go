@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,8 +8,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"google.golang.org/protobuf/proto"
 
 	tracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -267,15 +264,19 @@ func convertOTLPAttribute(attr *commonpb.KeyValue) attribute.KeyValue {
 		return key.Int64(v.IntValue)
 	case *commonpb.AnyValue_DoubleValue:
 		return key.Float64(v.DoubleValue)
+	case *commonpb.AnyValue_ArrayValue:
+		// Convert array to string representation for now
+		return key.String(fmt.Sprintf("%v", v.ArrayValue))
+	case *commonpb.AnyValue_KvlistValue:
+		// Convert key-value list to string representation for now
+		return key.String(fmt.Sprintf("%v", v.KvlistValue))
+	case *commonpb.AnyValue_BytesValue:
+		// Convert bytes to string
+		return key.String(string(v.BytesValue))
 	default:
-		return key.String("")
+		// Log warning for truly unknown types
+		return key.String(fmt.Sprintf("<unsupported type: %T>", v))
 	}
 }
 
-// Helper function to create an OTLP client exporter (for testing purposes)
-func createOTLPExporter(ctx context.Context, endpoint string) (*otlptrace.Exporter, error) {
-	return otlptracehttp.New(ctx,
-		otlptracehttp.WithEndpoint(endpoint),
-		otlptracehttp.WithInsecure(),
-	)
-}
+
