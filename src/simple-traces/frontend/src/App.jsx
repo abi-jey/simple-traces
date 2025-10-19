@@ -20,30 +20,154 @@ function App() {
   // Search state
   const [search, setSearch] = useState('')
   const debounceRef = useRef(null)
+  const listRef = useRef(null)
+  const sentinelRef = useRef(null)
+
+  // Theme state (light/dark) persisted in localStorage
+  const [theme, setTheme] = useState('light')
+
+  // Simple SPA routing & projects
+  const [view, setView] = useState('main') // 'main' | 'projects'
+  const [project, setProject] = useState('')
+  const [projectId, setProjectId] = useState('')
+  const [projects, setProjects] = useState([])
+
+  useEffect(() => {
+    const saved = localStorage.getItem('st-theme')
+    const initial = saved === 'dark' || saved === 'light' ? saved : 'light'
+    setTheme(initial)
+    document.documentElement.setAttribute('data-theme', initial)
+  }, [])
+
+  const toggleTheme = () => {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    setTheme(next)
+    localStorage.setItem('st-theme', next)
+    document.documentElement.setAttribute('data-theme', next)
+  }
 
   useEffect(() => {
     // initial load
-    fetchGroups(true)
+    // Projects: load from storage
+    const storedProjects = JSON.parse(localStorage.getItem('st-projects') || '[]')
+    setProjects(storedProjects)
+    const slugify = (s) => s.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '')
+    const parseRoute = (path) => {
+      if (path === '/projects') return { route: 'projects' }
+      const m = path.match(/^\/projects\/([^/]+)\/?$/)
+      if (m) return { route: 'project', id: decodeURIComponent(m[1]) }
+      return { route: 'root' }
+    }
+    const navigate = (path) => {
+      if (window.location.pathname !== path) {
+        window.history.pushState({}, '', path)
+      }
+    }
+    const applyProject = (pid) => {
+      const list = JSON.parse(localStorage.getItem('st-projects') || '[]')
+      const found = list.find((p) => p.id === pid)
+      const name = found ? found.name : pid
+      setProjectId(pid)
+      setProject(name)
+      localStorage.setItem('st-project-id', pid)
+      localStorage.setItem('st-project', name)
+    }
+    const route = parseRoute(window.location.pathname)
+    const savedName = localStorage.getItem('st-project')
+    const savedIdRaw = localStorage.getItem('st-project-id')
+    const savedId = savedIdRaw || (savedName ? slugify(savedName) : '')
+    if (route.route === 'projects') {
+      setView('projects')
+    } else if (route.route === 'project') {
+      applyProject(route.id)
+      setView('main')
+      fetchGroups(true)
+    } else {
+      // root: if saved project exists, navigate to it; otherwise go to projects
+      if (savedId) {
+        applyProject(savedId)
+        setView('main')
+        navigate(`/projects/${encodeURIComponent(savedId)}`)
+        fetchGroups(true)
+      } else {
+        setView('projects')
+        navigate('/projects')
+      }
+    }
     // start light polling for new groups every 5s
     const id = setInterval(() => {
       if (!pollRef.current) return
-      fetchGroups(true)
+      if (view === 'main') fetchGroups(true)
     }, 5000)
     return () => clearInterval(id)
   }, [])
 
+  // Handle browser back/forward
+  useEffect(() => {
+    const slugify = (s) => s.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '')
+    const parseRoute = (path) => {
+      if (path === '/projects') return { route: 'projects' }
+      const m = path.match(/^\/projects\/([^/]+)\/?$/)
+      if (m) return { route: 'project', id: decodeURIComponent(m[1]) }
+      return { route: 'root' }
+    }
+    const onPop = () => {
+      const r = parseRoute(window.location.pathname)
+      if (r.route === 'projects') {
+        setView('projects')
+      } else if (r.route === 'project') {
+        const list = JSON.parse(localStorage.getItem('st-projects') || '[]')
+        const found = list.find((p) => p.id === r.id)
+        const name = found ? found.name : r.id
+        setProjectId(r.id)
+        setProject(name)
+        localStorage.setItem('st-project-id', r.id)
+        localStorage.setItem('st-project', name)
+        setView('main')
+        // refresh data for the new route project
+        setGroups([]); setGroupsBefore(null); setHasMoreGroups(true); setGroupsLoading(true)
+        fetchGroups(true)
+      } else {
+        // root
+        const savedName = localStorage.getItem('st-project') || ''
+        const pid = localStorage.getItem('st-project-id') || (savedName ? slugify(savedName) : '')
+        if (pid) {
+          setView('main')
+        } else {
+          setView('projects')
+        }
+      }
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [])
+
   const fetchGroups = async (refresh = false) => {
-    try {
-      let url = '/api/trace-groups?limit=100'
-      if (!refresh && groupsBefore) {
+    return (
+      let url = '/api/conversations?limit=100'
+        <h2>Recent Projects</h2>
         url += `&before=${encodeURIComponent(groupsBefore)}`
       }
       if (search.trim()) {
         url += `&q=${encodeURIComponent(search.trim())}`
       }
       const res = await fetch(url)
-      if (!res.ok) throw new Error('Failed to fetch trace groups')
-      const data = await res.json()
+      if (!res.ok) throw new Error('Failed to fetch conversations')
+          {projects.length === 0 && (
+            <div style={{ color: 'var(--muted)' }}>
+              No recent projects. Open a URL like <code>/projects/project-1</code> to view a project.
+            </div>
+          )}
+      // Map conversations to existing UI shape (trace_id -> conversation id)
+      const data = Array.isArray(convs)
+        ? convs.map((c) => ({
+            trace_id: c.id,
+            first_start_time: c.first_start_time,
+            last_end_time: c.last_end_time,
+            span_count: c.span_count,
+            model: c.model,
+          }))
+        : []
       setConnectionStatus('connected')
       setGroupsLoading(false)
       if (refresh) {
@@ -85,8 +209,8 @@ function App() {
 
   const deleteGroup = async (group) => {
     try {
-      const res = await fetch(`/api/trace-groups/${encodeURIComponent(group.trace_id)}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Failed to delete group')
+      const res = await fetch(`/api/conversations/${encodeURIComponent(group.trace_id)}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Failed to delete conversation')
       // remove from list
       setGroups((prev) => prev.filter((g) => g.trace_id !== group.trace_id))
       if (selectedGroup?.trace_id === group.trace_id) {
@@ -97,6 +221,20 @@ function App() {
       alert('Delete failed: ' + e.message)
     }
   }
+
+  // Infinite scroll: observe sentinel at bottom of list
+  useEffect(() => {
+    if (view !== 'main') return
+    if (!sentinelRef.current) return
+    const io = new IntersectionObserver((entries) => {
+      const entry = entries[0]
+      if (entry.isIntersecting && hasMoreGroups && !groupsLoading) {
+        fetchGroups(false)
+      }
+    }, { root: listRef.current, rootMargin: '0px', threshold: 0.1 })
+    io.observe(sentinelRef.current)
+    return () => io.disconnect()
+  }, [view, hasMoreGroups, groupsLoading, groupsBefore, search])
 
   const getConnectionStatusDisplay = () => {
     switch (connectionStatus) {
@@ -171,7 +309,36 @@ function App() {
     return (
       <div className="connection-wrap" title={s.text}>
         <span className={`status-dot ${s.dot}`} />
-        <span style={{ fontSize: '0.85rem', color: '#444' }}>{s.text}</span>
+        <span className="status-text">{s.text}</span>
+      </div>
+    )
+  }
+
+  const ProjectsPage = () => {
+    const choose = (p) => {
+      setProject(p.name)
+      setProjectId(p.id)
+      localStorage.setItem('st-project', p.name)
+      localStorage.setItem('st-project-id', p.id)
+      // navigate to /projects/:id
+      if (window.location.pathname !== `/projects/${encodeURIComponent(p.id)}`) {
+        window.history.pushState({}, '', `/projects/${encodeURIComponent(p.id)}`)
+      }
+      setView('main')
+      setGroups([]); setGroupsBefore(null); setHasMoreGroups(true); setGroupsLoading(true)
+      fetchGroups(true)
+    }
+    return (
+      <div className="projects-page">
+        <h2>Select a Project</h2>
+        <div className="projects-grid">
+          {projects.map((p) => (
+            <div key={p.id} className="project-card" onClick={() => choose(p)}>
+              <div className="project-icon">📁</div>
+              <div className="project-name">{p.name}</div>
+            </div>
+          ))}
+        </div>
       </div>
     )
   }
@@ -195,13 +362,35 @@ function App() {
     return msgs
   }
 
+  const buildSubtitleText = (group, spans) => {
+    // Try to extract first user or system message from the earliest span
+    if (spans && spans.length > 0) {
+      const first = spans[0]
+      let attrs = null
+      try { attrs = first.attributes ? JSON.parse(first.attributes) : null } catch { attrs = null }
+      if (attrs) {
+        const user = attrs['llm.input'] || attrs['gen_ai.prompt']
+        const sys = attrs['gen_ai.system'] || attrs['llm.system']
+        const pick = user || sys
+        if (pick && typeof pick === 'string') {
+          const t = pick.trim().replace(/\s+/g, ' ')
+          return t.length > 120 ? t.slice(0, 120) + '…' : t
+        }
+      }
+    }
+    // Fallback: show concise time range and model
+    const left = group?.first_start_time ? new Date(group.first_start_time).toLocaleString() : ''
+    const right = group?.last_end_time ? new Date(group.last_end_time).toLocaleString() : ''
+    return `${left && right ? `${left} → ${right}` : left || right}${group?.model ? ` • ${group.model}` : ''}`
+  }
+
   return (
     <div className="app">
       <header className="header">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
           <div>
-            <h1>🧵 Simple Traces</h1>
-            <p>Grouped by related spans (trace_id)</p>
+            <h1>🧵 Simple Traces {project ? <span className="project-badge">({project})</span> : null}</h1>
+            <div style={{ marginTop: '0.25rem' }}><ConnectionIndicator /></div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             <input
@@ -215,24 +404,43 @@ function App() {
                 debounceRef.current = setTimeout(() => {
                   // Refresh groups with search
                   setGroupsBefore(null)
-                  fetchGroups(true)
+                  if (view === 'main') fetchGroups(true)
                   // Refresh spans if a group is open
                   if (selectedGroup) fetchGroupSpans(selectedGroup)
                 }, 220)
               }}
-              style={{ padding: '0.5rem 0.65rem', borderRadius: 8, border: '1px solid #e5e7eb', minWidth: 320 }}
+              className="search-input"
             />
-            <ConnectionIndicator />
+            <button className="theme-toggle" onClick={toggleTheme} title="Toggle theme">
+              {theme === 'dark' ? '🌙' : '🌞'}
+            </button>
+            <button
+              className="theme-toggle"
+              onClick={() => {
+                if (window.location.pathname !== '/projects') {
+                  window.history.pushState({}, '', '/projects')
+                }
+                setView('projects')
+              }}
+              title="Change project"
+            >
+              Projects
+            </button>
           </div>
         </div>
       </header>
 
       <div className="container">
+        {view === 'projects' && (
+          <ProjectsPage />
+        )}
+
+        {view === 'main' && (
+          <>
         {groupsLoading && <div className="loading">Loading trace groups...</div>}
 
         {!groupsLoading && groups.length === 0 && (
           <div className="empty-state">
-            <ConnectionIndicator />
             <h2>No trace groups yet</h2>
             <p>You can import sample spans from the provided JSONL file to get started.</p>
             <pre className="code-block">
@@ -245,10 +453,10 @@ function App() {
 
         {!groupsLoading && groups.length > 0 && (
           <div className="content">
-            <div className="traces-list">
+            <div className="traces-list" ref={listRef}>
               <div className="list-header">
-                <h2>Recent Threads ({groups.length})</h2>
-                <div className="header-controls"><ConnectionIndicator /></div>
+                <h2>Conversations ({groups.length})</h2>
+                <div className="header-controls" />
               </div>
 
               {groups.map((g) => (
@@ -276,19 +484,16 @@ function App() {
                 </div>
               ))}
 
-              {hasMoreGroups && (
-                <div style={{ textAlign: 'center', marginTop: '0.75rem' }}>
-                  <button className="error" onClick={() => fetchGroups(false)}>
-                    Load more
-                  </button>
-                </div>
-              )}
+              <div ref={sentinelRef} style={{ height: 1 }} />
             </div>
 
             {selectedGroup && (
               <div className="trace-details">
                 <div className="details-header">
-                  <h2>Thread: {selectedGroup.trace_id.slice(0, 12)}…</h2>
+                  <div>
+                    <h2>{(groupSpans[0]?.name) || `Thread: ${selectedGroup.trace_id.slice(0, 12)}…`}</h2>
+                    <div className="subtitle">{buildSubtitleText(selectedGroup, groupSpans)}</div>
+                  </div>
                   <button onClick={() => { setSelectedGroup(null); setGroupSpans([]) }} className="close-btn">
                     ×
                   </button>
@@ -347,6 +552,8 @@ function App() {
               </div>
             )}
           </div>
+        )}
+          </>
         )}
       </div>
     </div>

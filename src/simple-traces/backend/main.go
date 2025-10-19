@@ -753,7 +753,11 @@ func getConversationsHandler(db Database, logger *Logger) http.HandlerFunc {
 				before = t
 			}
 		}
+		search := strings.TrimSpace(q.Get("q"))
 		convs, err := db.GetConversations(limit, before)
+		if search != "" {
+			convs, err = db.GetConversationsWithSearch(limit, before, search)
+		}
 		if err != nil {
 			logger.Error("Failed to get conversations: %v", err)
 			http.Error(w, fmt.Sprintf("Failed to get conversations: %v", err), http.StatusInternalServerError)

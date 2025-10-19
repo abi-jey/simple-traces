@@ -114,6 +114,7 @@ type Database interface {
 	// Conversations API
 	BatchUpsertConversations(updates []ConversationUpdate) error
 	GetConversations(limit int, before time.Time) ([]Conversation, error)
+	GetConversationsWithSearch(limit int, before time.Time, search string) ([]Conversation, error)
 	// Ensure all spans for a trace_id have a conversation id attribute
 	PropagateConversationID(traceID, conversationID string) (int64, error)
 	// Delete by conversation id
@@ -729,6 +730,46 @@ func (s *SQLiteDB) GetConversations(limit int, before time.Time) ([]Conversation
 	return out, nil
 }
 
+// GetConversationsWithSearch filters conversations by id or model using LIKE, ordered by last_end_time DESC
+func (s *SQLiteDB) GetConversationsWithSearch(limit int, before time.Time, search string) ([]Conversation, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	pattern := "%" + strings.ToLower(strings.TrimSpace(search)) + "%"
+	var rows *sql.Rows
+	var err error
+	if before.IsZero() {
+		rows, err = s.db.Query(`
+			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
+			FROM conversations
+			WHERE lower(id) LIKE ? OR lower(coalesce(model, '')) LIKE ?
+			ORDER BY last_end_time DESC
+			LIMIT ?
+		`, pattern, pattern, limit)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
+			FROM conversations
+			WHERE (lower(id) LIKE ? OR lower(coalesce(model, '')) LIKE ?) AND last_end_time < ?
+			ORDER BY last_end_time DESC
+			LIMIT ?
+		`, pattern, pattern, before, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Conversation, 0, limit)
+	for rows.Next() {
+		var c Conversation
+		if err := rows.Scan(&c.ID, &c.FirstStartTime, &c.LastEndTime, &c.SpanCount, &c.Model); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
 func (s *SQLiteDB) GetTraceGroups(limit int, before time.Time) ([]TraceGroup, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 100
@@ -1279,6 +1320,45 @@ func (p *PostgresDB) GetConversations(limit int, before time.Time) ([]Conversati
 			ORDER BY last_end_time DESC
 			LIMIT $2
 		`, before, limit)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]Conversation, 0, limit)
+	for rows.Next() {
+		var c Conversation
+		if err := rows.Scan(&c.ID, &c.FirstStartTime, &c.LastEndTime, &c.SpanCount, &c.Model); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func (p *PostgresDB) GetConversationsWithSearch(limit int, before time.Time, search string) ([]Conversation, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	pattern := "%" + strings.TrimSpace(search) + "%"
+	var rows *sql.Rows
+	var err error
+	if before.IsZero() {
+		rows, err = p.db.Query(`
+			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
+			FROM conversations
+			WHERE id ILIKE $1 OR coalesce(model, '') ILIKE $1
+			ORDER BY last_end_time DESC
+			LIMIT $2
+		`, pattern, limit)
+	} else {
+		rows, err = p.db.Query(`
+			SELECT id, first_start_time, last_end_time, span_count, COALESCE(model, '')
+			FROM conversations
+			WHERE (id ILIKE $1 OR coalesce(model, '') ILIKE $1) AND last_end_time < $2
+			ORDER BY last_end_time DESC
+			LIMIT $3
+		`, pattern, before, limit)
 	}
 	if err != nil {
 		return nil, err
