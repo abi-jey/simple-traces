@@ -39,11 +39,20 @@ function App() {
     document.documentElement.setAttribute('data-theme', initial)
   }, [])
 
-  const toggleTheme = () => {
+  const toggleTheme = (e) => {
     const next = theme === 'dark' ? 'light' : 'dark'
     setTheme(next)
     localStorage.setItem('st-theme', next)
     document.documentElement.setAttribute('data-theme', next)
+    
+    // Add bounce animation
+    const btn = e?.currentTarget || e?.target
+    if (btn) {
+      btn.classList.add('toggling')
+      setTimeout(() => {
+        btn.classList.remove('toggling')
+      }, 500)
+    }
   }
 
   useEffect(() => {
@@ -402,7 +411,7 @@ function App() {
       <header className="header">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
           <div>
-            <h1>🧵 Simple Traces {project ? <span className="project-badge">({project})</span> : null}</h1>
+            <h1>Simple Traces {project ? <span className="project-badge">({project})</span> : null}</h1>
             <div style={{ marginTop: '0.25rem' }}><ConnectionIndicator /></div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
@@ -424,8 +433,9 @@ function App() {
               }}
               className="search-input"
             />
-            <button className="theme-toggle" onClick={toggleTheme} title="Toggle theme">
-              {theme === 'dark' ? '🌙' : '🌞'}
+            <button className="theme-toggle-switch" onClick={toggleTheme} title="Toggle theme">
+              <span className="toggle-icon sun-icon">☀️</span>
+              <span className="toggle-icon moon-icon">🌙</span>
             </button>
             <button
               className="theme-toggle"
