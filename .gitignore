@@ -40,16 +40,18 @@ go.work.sum
 /data/
 
 # Backend binary
-backend/simple-traces
+/simple-traces
+src/simple-traces/backend/simple-traces
 
 # Frontend
-frontend/node_modules/
-frontend/dist/
-frontend/dist-ssr/
+node_modules/
+src/simple-traces/frontend/node_modules/
+src/simple-traces/frontend/dist/
+src/simple-traces/frontend/dist-ssr/
 *.local
 
 # Backend embedded frontend (copied during build)
-backend/frontend/
+src/simple-traces/backend/frontend/
 
 # Logs
 logs

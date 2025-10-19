@@ -4,11 +4,11 @@ FROM node:lts-alpine AS frontend-builder
 WORKDIR /frontend
 
 # Copy package files
-COPY frontend/package*.json ./
-RUN npm ci
+COPY src/simple-traces/frontend/package*.json ./
+RUN npm install
 
 # Copy frontend source
-COPY frontend/ ./
+COPY src/simple-traces/frontend/ ./
 
 # Build frontend
 RUN npm run build
@@ -22,17 +22,17 @@ WORKDIR /app
 RUN apk add --no-cache gcc musl-dev
 
 # Copy the built frontend from frontend-builder stage
-COPY --from=frontend-builder /frontend/dist ./frontend/dist
+COPY --from=frontend-builder /frontend/dist ./src/simple-traces/frontend/dist
 
 # Copy go mod files
-COPY backend/go.mod backend/go.sum ./
+COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY backend/*.go ./
+COPY src/simple-traces/backend/*.go ./src/simple-traces/backend/
 
 # Build the application with CGO enabled for SQLite
-RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o simple-traces .
+RUN cd src/simple-traces/backend && CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o ../../../simple-traces .
 
 # Stage 3: Final runtime image
 FROM alpine:latest
