@@ -35,10 +35,8 @@ func main() {
 	api.HandleFunc("/traces", getTracesHandler(db)).Methods("GET")
 	api.HandleFunc("/traces/{id}", getTraceByIDHandler(db)).Methods("GET")
 	
-	// Serve frontend static files
-	if config.FrontendDir != "" {
-		router.PathPrefix("/").Handler(http.FileServer(http.Dir(config.FrontendDir)))
-	}
+	// Serve embedded frontend static files
+	router.PathPrefix("/").Handler(http.FileServer(getFrontendFS()))
 	
 	// Enable CORS for development
 	router.Use(corsMiddleware)
@@ -56,7 +54,7 @@ func loadConfig() Config {
 		DBType:       getEnv("DB_TYPE", "sqlite"),
 		DBConnection: getEnv("DB_CONNECTION", "./traces.db"),
 		Port:         getEnv("PORT", "8080"),
-		FrontendDir:  getEnv("FRONTEND_DIR", "../frontend/dist"),
+		FrontendDir:  "", // No longer used - frontend is embedded
 	}
 	
 	if config.DBType == "postgres" && config.DBConnection == "./traces.db" {
