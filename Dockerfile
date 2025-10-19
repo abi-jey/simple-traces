@@ -1,40 +1,44 @@
-# Stage 1: Build frontend
+########## Stage 1: Build frontend ##########
 FROM node:lts-alpine AS frontend-builder
 
-WORKDIR /frontend
+WORKDIR /app
 
-# Copy package files
-COPY src/simple-traces/frontend/package*.json ./
-RUN npm install
+# Copy root package files and vite config
+COPY package*.json ./
+COPY vite.config.js ./
 
-# Copy frontend source
-COPY src/simple-traces/frontend/ ./
+# Copy frontend source code
+COPY src/simple-traces/frontend ./src/simple-traces/frontend
 
-# Build frontend
-RUN npm run build
+# Install and build
+RUN npm install && mkdir -p src/simple-traces/backend/frontend && npm run build
 
-# Stage 2: Build Go backend with embedded frontend
-FROM golang:1.21-alpine AS go-builder
+########## Stage 2: Build Go backend with embedded frontend ##########
+FROM golang:1.25-alpine AS go-builder
 
 WORKDIR /app
 
 # Install build dependencies for CGO
 RUN apk add --no-cache gcc musl-dev
 
-# Copy the built frontend from frontend-builder stage
-COPY --from=frontend-builder /frontend/dist ./src/simple-traces/frontend/dist
+# Ensure Go can auto-download the exact toolchain version specified in go.mod if needed
+ENV GOTOOLCHAIN=auto
 
-# Copy go mod files
+# Copy root Go module files and download dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
-COPY src/simple-traces/backend/*.go ./src/simple-traces/backend/
+# Copy entire repository (keeping module path intact for embedding and cmd build)
+COPY . .
 
-# Build the application with CGO enabled for SQLite
-RUN cd src/simple-traces/backend && CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o ../../../simple-traces .
+# Ensure the built frontend from the frontend-builder stage is present at the embed path inside the repo before building
+RUN mkdir -p src/simple-traces/backend/frontend/dist
+COPY --from=frontend-builder /app/src/simple-traces/backend/frontend/dist/ ./src/simple-traces/backend/frontend/dist/
 
-# Stage 3: Final runtime image
+# Build the application with CGO enabled for SQLite from the repo root
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /app/simple-traces .
+
+########## Stage 3: Final runtime image ##########
 FROM alpine:latest
 
 RUN apk --no-cache add ca-certificates sqlite-libs

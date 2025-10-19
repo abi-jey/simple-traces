@@ -1,4 +1,4 @@
-package main
+package backend
 
 import (
 	"context"
@@ -22,17 +22,19 @@ type Config struct {
 	OTLPEndpoint string
 }
 
-func main() {
+// Run starts the Simple Traces server using environment configuration.
+func Run() error {
 	config := loadConfig()
-	
+
 	// Initialize logger
 	logger := InitLogger(config.LogLevel)
 	logger.Info("Starting Simple Traces server")
 	logger.Info("Log level: %s", config.LogLevel)
-	
+
 	db, err := initDB(config)
 	if err != nil {
-		logger.Fatal("Failed to initialize database: %v", err)
+		logger.Error("Failed to initialize database: %v", err)
+		return fmt.Errorf("init db: %w", err)
 	}
 	defer db.Close()
 	logger.Info("Database initialized successfully (type: %s)", config.DBType)
@@ -41,7 +43,8 @@ func main() {
 	if config.OTLPEnabled {
 		tp, err := setupTracerProvider(config, db, logger)
 		if err != nil {
-			logger.Fatal("Failed to initialize OpenTelemetry tracer provider: %v", err)
+			logger.Error("Failed to initialize OpenTelemetry tracer provider: %v", err)
+			return fmt.Errorf("setup otel: %w", err)
 		}
 		defer func() {
 			if err := tp.Shutdown(context.Background()); err != nil {
@@ -60,32 +63,35 @@ func main() {
 	api.HandleFunc("/traces", createTraceHandler(db, logger)).Methods("POST")
 	api.HandleFunc("/traces", getTracesHandler(db, logger)).Methods("GET")
 	api.HandleFunc("/traces/{id}", getTraceByIDHandler(db, logger)).Methods("GET")
-	
+
 	// OpenTelemetry OTLP endpoint
 	if config.OTLPEnabled {
 		otlpHandler := NewOTLPHandler(db, logger)
 		router.HandleFunc("/v1/traces", otlpHandler.ServeHTTP).Methods("POST")
 		logger.Info("OTLP HTTP endpoint enabled at /v1/traces")
 	}
-	
+
 	// Serve embedded frontend static files
 	router.PathPrefix("/").Handler(http.FileServer(getFrontendFS()))
-	
+
 	// Enable CORS for development
 	router.Use(corsMiddleware)
 	router.Use(loggingMiddleware(logger))
-	
+
 	addr := ":" + config.Port
 	logger.Info("Server starting on %s", addr)
 	if err := http.ListenAndServe(addr, router); err != nil {
-		logger.Fatal("Server failed to start: %v", err)
+		logger.Error("Server failed to start: %v", err)
+		return fmt.Errorf("listen and serve: %w", err)
 	}
+	return nil
 }
 
 func loadConfig() Config {
 	config := Config{
-		DBType:       getEnv("DB_TYPE", "sqlite"),
-		DBConnection: getEnv("DB_CONNECTION", "/data/traces.db"),
+		DBType: getEnv("DB_TYPE", "sqlite"),
+		// Default to a local, writable path for non-container runs; Dockerfile overrides to /data/traces.db
+		DBConnection: getEnv("DB_CONNECTION", "./data/traces.db"),
 		Port:         getEnv("PORT", "8080"),
 		FrontendDir:  "", // No longer used - frontend is embedded
 		LogLevel:     getEnv("LOG_LEVEL", "INFO"),
@@ -131,15 +137,15 @@ func loggingMiddleware(logger *Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			
+
 			// Log request
 			logger.Debug("Request: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
-			
+
 			// Wrap response writer to capture status code
 			wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
-			
+
 			next.ServeHTTP(wrapped, r)
-			
+
 			// Log response
 			duration := time.Since(start)
 			logger.Info("Request: %s %s - Status: %d - Duration: %v", r.Method, r.URL.Path, wrapped.statusCode, duration)
@@ -175,10 +181,10 @@ func createTraceHandler(db Database, logger *Logger) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
 			return
 		}
-		
+
 		logger.Debug("Creating trace: Model=%s, PromptTokens=%d, OutputTokens=%d, Duration=%dms",
 			input.Model, input.PromptTokens, input.OutputTokens, input.Duration)
-		
+
 		metadataJSON, _ := json.Marshal(input.Metadata)
 
 		trace := Trace{
@@ -198,10 +204,10 @@ func createTraceHandler(db Database, logger *Logger) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("Failed to create trace: %v", err), http.StatusInternalServerError)
 			return
 		}
-		
+
 		logger.Info("Trace created successfully: %s (Model: %s, Duration: %dms, Tokens: %d/%d)",
 			id, input.Model, input.Duration, input.PromptTokens, input.OutputTokens)
-		
+
 		trace.ID = id
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
@@ -221,9 +227,9 @@ func getTracesHandler(db Database, logger *Logger) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("Failed to get traces: %v", err), http.StatusInternalServerError)
 			return
 		}
-		
+
 		logger.Debug("Retrieved %d traces", len(traces))
-		
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(traces)
 	}
@@ -233,9 +239,9 @@ func getTraceByIDHandler(db Database, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
 		id := vars["id"]
-		
+
 		logger.Debug("Fetching trace by ID: %s", id)
-		
+
 		trace, err := db.GetTraceByID(id)
 		if err != nil {
 			logger.Error("Failed to get trace %s: %v", id, err)
@@ -248,9 +254,9 @@ func getTraceByIDHandler(db Database, logger *Logger) http.HandlerFunc {
 			http.Error(w, "Trace not found", http.StatusNotFound)
 			return
 		}
-		
+
 		logger.Debug("Retrieved trace: %s", id)
-		
+
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(trace)
 	}

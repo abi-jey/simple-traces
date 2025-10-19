@@ -201,6 +201,24 @@ export LOG_LEVEL=DEBUG
 
 ### Backend
 
+Build from the repo root (produces a `simple-traces` binary in the root):
+
+```
+go build ./cmd/simple-traces
+```
+
+Alternatively, build and run in one go:
+
+```
+go run ./cmd/simple-traces
+```
+
+Docker build also works from the root and will build the frontend and embed it:
+
+```
+docker build -t ghcr.io/abi-jey/simple-traces:latest-dev .
+```
+
 ```bash
 cd src/simple-traces/backend
 go run .

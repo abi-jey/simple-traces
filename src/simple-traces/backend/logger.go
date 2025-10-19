@@ -1,4 +1,4 @@
-package main
+package backend
 
 import (
 	"io"
@@ -31,9 +31,9 @@ var globalLogger *Logger
 // InitLogger initializes the global logger with the specified log level
 func InitLogger(levelStr string) *Logger {
 	level := parseLogLevel(levelStr)
-	
+
 	var debugOut, infoOut, warnOut, errorOut io.Writer
-	
+
 	// Configure output based on log level
 	switch level {
 	case DEBUG:
@@ -57,7 +57,7 @@ func InitLogger(levelStr string) *Logger {
 		warnOut = io.Discard
 		errorOut = os.Stderr
 	}
-	
+
 	globalLogger = &Logger{
 		debugLogger: log.New(debugOut, "[DEBUG] ", log.LstdFlags|log.Lshortfile),
 		infoLogger:  log.New(infoOut, "[INFO]  ", log.LstdFlags),
@@ -65,7 +65,7 @@ func InitLogger(levelStr string) *Logger {
 		errorLogger: log.New(errorOut, "[ERROR] ", log.LstdFlags|log.Lshortfile),
 		level:       level,
 	}
-	
+
 	return globalLogger
 }
 

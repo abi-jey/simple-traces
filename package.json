@@ -5,18 +5,20 @@
   "type": "module",
   "description": "A lightweight LLM tracing tool with support for SQLite or PostgreSQL",
   "scripts": {
-    "dev": "npm run dev --prefix src/simple-traces/frontend",
-    "build": "npm run build --prefix src/simple-traces/frontend",
-    "preview": "npm run preview --prefix src/simple-traces/frontend",
-    "install-frontend": "npm install --prefix src/simple-traces/frontend",
-    "build-backend": "mkdir -p src/simple-traces/backend/frontend && cp -r src/simple-traces/frontend/dist src/simple-traces/backend/frontend/dist && cd src/simple-traces/backend && go build -o ../../../simple-traces .",
-    "build-all": "npm run install-frontend && npm run build && npm run build-backend",
-    "clean": "rm -rf src/simple-traces/backend/frontend src/simple-traces/frontend/dist src/simple-traces/frontend/node_modules simple-traces"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "clean": "rm -rf src/simple-traces/backend/frontend/dist node_modules simple-traces"
   },
   "keywords": ["tracing", "llm", "opentelemetry", "go", "react"],
   "author": "",
   "license": "MIT",
-  "workspaces": [
-    "src/simple-traces/frontend"
-  ]
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "vite": "^5.4.2"
+  }
 }
