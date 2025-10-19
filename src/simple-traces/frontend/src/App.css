@@ -589,12 +589,12 @@ html, body, #root {
 }
 .status-dot.disconnected { 
   background: var(--error); 
-  animation: glow-disconnected 1.5s ease-in-out infinite;
+  animation: glow-disconnected 1.6s ease-in-out infinite;
   box-shadow: 0 0 0 0 var(--glow-color-error);
 }
 .status-dot.connecting { 
   background: var(--warning); 
-  animation: glow-connecting 1.5s ease-in-out infinite; 
+  animation: glow-connecting 1.6s ease-in-out infinite; 
   box-shadow: 0 0 0 0 var(--glow-color-warning);
 }
 @keyframes glow-connected {
