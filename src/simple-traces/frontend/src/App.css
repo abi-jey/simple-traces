@@ -54,6 +54,11 @@
   --header-border: rgba(255, 255, 255, 0.1);
   --title-gradient: linear-gradient(135deg, #ffffff 0%, #f0f0ff 100%);
   
+  /* Glow colors for connection status - light mode uses brighter, more visible glows */
+  --glow-color-connected: rgba(255, 255, 255, 0.9);
+  --glow-color-error: rgba(255, 255, 255, 0.9);
+  --glow-color-warning: rgba(255, 255, 255, 0.9);
+  
   /* Shadows */
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
   --shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
@@ -87,6 +92,11 @@
   --header-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
   --header-border: rgba(255, 255, 255, 0.05);
   --title-gradient: linear-gradient(135deg, #fafafa 0%, #a5b4fc 100%);
+  
+  /* Glow colors for connection status - dark mode uses the actual status colors */
+  --glow-color-connected: rgba(52, 211, 153, 0.6);
+  --glow-color-error: rgba(248, 113, 113, 0.6);
+  --glow-color-warning: rgba(251, 191, 36, 0.6);
   
   /* Shadows */
   --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
@@ -574,21 +584,60 @@ html, body, #root {
 }
 .status-dot.connected { 
   background: var(--success); 
-  animation: glow 1.6s ease-in-out infinite; 
-  box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6);
+  animation: glow-connected 1.6s ease-in-out infinite; 
+  box-shadow: 0 0 0 0 var(--glow-color-connected);
 }
 .status-dot.disconnected { 
   background: var(--error); 
-  animation: pulse 1s linear infinite;
+  animation: glow-disconnected 1.5s ease-in-out infinite;
+  box-shadow: 0 0 0 0 var(--glow-color-error);
 }
 .status-dot.connecting { 
   background: var(--warning); 
-  animation: pulse 1s linear infinite; 
+  animation: glow-connecting 1.5s ease-in-out infinite; 
+  box-shadow: 0 0 0 0 var(--glow-color-warning);
 }
-@keyframes glow {
-  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.6); }
-  70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+@keyframes glow-connected {
+  0% { 
+    box-shadow: 0 0 4px 2px var(--glow-color-connected),
+                0 0 0 0 var(--glow-color-connected);
+  }
+  50% { 
+    box-shadow: 0 0 8px 4px var(--glow-color-connected),
+                0 0 0 6px transparent;
+  }
+  100% { 
+    box-shadow: 0 0 4px 2px var(--glow-color-connected),
+                0 0 0 0 var(--glow-color-connected);
+  }
+}
+@keyframes glow-disconnected {
+  0% { 
+    box-shadow: 0 0 4px 2px var(--glow-color-error),
+                0 0 0 0 var(--glow-color-error);
+  }
+  50% { 
+    box-shadow: 0 0 8px 4px var(--glow-color-error),
+                0 0 0 6px transparent;
+  }
+  100% { 
+    box-shadow: 0 0 4px 2px var(--glow-color-error),
+                0 0 0 0 var(--glow-color-error);
+  }
+}
+@keyframes glow-connecting {
+  0% { 
+    box-shadow: 0 0 4px 2px var(--glow-color-warning),
+                0 0 0 0 var(--glow-color-warning);
+  }
+  50% { 
+    box-shadow: 0 0 8px 4px var(--glow-color-warning),
+                0 0 0 6px transparent;
+  }
+  100% { 
+    box-shadow: 0 0 4px 2px var(--glow-color-warning),
+                0 0 0 0 var(--glow-color-warning);
+  }
 }
 
 /* Chat conversation look */
