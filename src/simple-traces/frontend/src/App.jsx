@@ -47,8 +47,11 @@ function App() {
           })
         ])
         
-        if (!tracesResponse.ok || !spansResponse.ok) {
-          throw new Error('Failed to fetch data')
+        if (!tracesResponse.ok) {
+          throw new Error(`Failed to fetch traces: ${tracesResponse.status}`)
+        }
+        if (!spansResponse.ok) {
+          throw new Error(`Failed to fetch spans: ${spansResponse.status}`)
         }
         
         const tracesData = await tracesResponse.json()
@@ -237,7 +240,7 @@ function App() {
                     <span className="trace-duration">{formatDuration(span.duration_ms)}</span>
                   </div>
                   <div className="trace-preview">
-                    Trace ID: {span.trace_id.substring(0, 16)}...
+                    Trace ID: {span.trace_id ? span.trace_id.substring(0, 16) : 'N/A'}...
                   </div>
                   <div className="trace-stats">
                     <span>🔖 {span.status_code || 'N/A'}</span>
