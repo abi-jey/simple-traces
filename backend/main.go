@@ -54,7 +54,7 @@ func main() {
 	}
 
 	router := mux.NewRouter()
-	
+
 	// API routes
 	api := router.PathPrefix("/api").Subrouter()
 	api.HandleFunc("/traces", createTraceHandler(db, logger)).Methods("POST")
@@ -68,11 +68,8 @@ func main() {
 		logger.Info("OTLP HTTP endpoint enabled at /v1/traces")
 	}
 	
-	// Serve frontend static files
-	if config.FrontendDir != "" {
-		router.PathPrefix("/").Handler(http.FileServer(http.Dir(config.FrontendDir)))
-		logger.Debug("Frontend directory: %s", config.FrontendDir)
-	}
+	// Serve embedded frontend static files
+	router.PathPrefix("/").Handler(http.FileServer(getFrontendFS()))
 	
 	// Enable CORS for development
 	router.Use(corsMiddleware)
@@ -88,18 +85,18 @@ func main() {
 func loadConfig() Config {
 	config := Config{
 		DBType:       getEnv("DB_TYPE", "sqlite"),
-		DBConnection: getEnv("DB_CONNECTION", "./traces.db"),
+		DBConnection: getEnv("DB_CONNECTION", "/data/traces.db"),
 		Port:         getEnv("PORT", "8080"),
-		FrontendDir:  getEnv("FRONTEND_DIR", "../frontend/dist"),
+		FrontendDir:  "", // No longer used - frontend is embedded
 		LogLevel:     getEnv("LOG_LEVEL", "INFO"),
 		OTLPEnabled:  parseBool(getEnv("OTLP_ENABLED", "true")),
 		OTLPEndpoint: getEnv("OTLP_ENDPOINT", ":4318"),
 	}
-	
+
 	if config.DBType == "postgres" && config.DBConnection == "./traces.db" {
 		config.DBConnection = "postgres://localhost/traces?sslmode=disable"
 	}
-	
+
 	return config
 }
 
@@ -120,12 +117,12 @@ func corsMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		
+
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
-		
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -161,13 +158,13 @@ func (rw *responseWriter) WriteHeader(code int) {
 }
 
 type TraceInput struct {
-	Model         string                 `json:"model"`
-	Input         string                 `json:"input"`
-	Output        string                 `json:"output"`
-	PromptTokens  int                    `json:"prompt_tokens"`
-	OutputTokens  int                    `json:"output_tokens"`
-	Duration      int64                  `json:"duration"`
-	Metadata      map[string]interface{} `json:"metadata,omitempty"`
+	Model        string                 `json:"model"`
+	Input        string                 `json:"input"`
+	Output       string                 `json:"output"`
+	PromptTokens int                    `json:"prompt_tokens"`
+	OutputTokens int                    `json:"output_tokens"`
+	Duration     int64                  `json:"duration"`
+	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
 func createTraceHandler(db Database, logger *Logger) http.HandlerFunc {
@@ -183,7 +180,7 @@ func createTraceHandler(db Database, logger *Logger) http.HandlerFunc {
 			input.Model, input.PromptTokens, input.OutputTokens, input.Duration)
 		
 		metadataJSON, _ := json.Marshal(input.Metadata)
-		
+
 		trace := Trace{
 			Model:        input.Model,
 			Input:        input.Input,
@@ -194,7 +191,7 @@ func createTraceHandler(db Database, logger *Logger) http.HandlerFunc {
 			Metadata:     string(metadataJSON),
 			Timestamp:    time.Now(),
 		}
-		
+
 		id, err := db.CreateTrace(trace)
 		if err != nil {
 			logger.Error("Failed to create trace: %v", err)
@@ -245,7 +242,7 @@ func getTraceByIDHandler(db Database, logger *Logger) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("Failed to get trace: %v", err), http.StatusInternalServerError)
 			return
 		}
-		
+
 		if trace == nil {
 			logger.Debug("Trace not found: %s", id)
 			http.Error(w, "Trace not found", http.StatusNotFound)
