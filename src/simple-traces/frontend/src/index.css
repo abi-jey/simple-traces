@@ -16,6 +16,21 @@ body {
   transition: background 0.3s ease;
 }
 
+/* Subtle background pattern */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.03;
+  z-index: -1;
+  background-image: radial-gradient(circle at 1px 1px, var(--text) 1px, transparent 0);
+  background-size: 40px 40px;
+  pointer-events: none;
+}
+
 code {
   font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
   background: var(--panel-alt, #f4f4f5);
@@ -33,6 +48,12 @@ code {
 *:focus-visible {
   outline: 2px solid var(--primary, #6366f1);
   outline-offset: 2px;
+}
+
+/* Selection color */
+::selection {
+  background-color: var(--primary-light);
+  color: white;
 }
 
 /* Smooth transitions for theme changes */
