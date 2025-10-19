@@ -1,30 +1,80 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import './App.css'
 
 function App() {
   const [traces, setTraces] = useState([])
   const [selectedTrace, setSelectedTrace] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [connectionStatus, setConnectionStatus] = useState('connecting') // 'connected', 'disconnected', 'connecting'
+  const [newTracesCount, setNewTracesCount] = useState(0)
+  const previousTraceCountRef = useRef(0)
+  const isPollingRef = useRef(false)
+  const abortControllerRef = useRef(null)
 
   useEffect(() => {
-    fetchTraces()
+    startLongPolling()
+    
+    return () => {
+      // Cleanup on unmount
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort()
+      }
+    }
   }, [])
 
-  const fetchTraces = async () => {
-    try {
-      setLoading(true)
-      const response = await fetch('/api/traces')
-      if (!response.ok) {
-        throw new Error('Failed to fetch traces')
+  const startLongPolling = async () => {
+    while (true) {
+      try {
+        // Cancel previous request if any
+        if (abortControllerRef.current) {
+          abortControllerRef.current.abort()
+        }
+        
+        abortControllerRef.current = new AbortController()
+        
+        const response = await fetch('/api/traces', {
+          signal: abortControllerRef.current.signal
+        })
+        
+        if (!response.ok) {
+          throw new Error('Failed to fetch traces')
+        }
+        
+        const data = await response.json()
+        const newData = data || []
+        
+        // Update connection status to connected
+        setConnectionStatus('connected')
+        setLoading(false)
+        
+        // Check if there are new traces
+        if (newData.length > previousTraceCountRef.current) {
+          const newCount = newData.length - previousTraceCountRef.current
+          setNewTracesCount(newCount)
+        } else if (newData.length < previousTraceCountRef.current) {
+          // Handle trace deletion
+          setNewTracesCount(0)
+        }
+        
+        setTraces(newData)
+        previousTraceCountRef.current = newData.length
+        
+        // Wait before next poll (long polling with 3 second delay)
+        await new Promise(resolve => setTimeout(resolve, 3000))
+        
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          // Request was aborted, this is expected on cleanup
+          break
+        }
+        
+        console.debug('Polling error:', err)
+        setConnectionStatus('disconnected')
+        setLoading(false)
+        
+        // Wait longer before retrying on error (5 seconds)
+        await new Promise(resolve => setTimeout(resolve, 5000))
       }
-      const data = await response.json()
-      setTraces(data || [])
-      setError(null)
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setLoading(false)
     }
   }
 
@@ -37,6 +87,23 @@ function App() {
     return new Date(timestamp).toLocaleString()
   }
 
+  const handleDismissNewBadge = () => {
+    setNewTracesCount(0)
+  }
+
+  const getConnectionStatusDisplay = () => {
+    switch (connectionStatus) {
+      case 'connected':
+        return { icon: '🟢', text: 'Connected', className: 'status-connected' }
+      case 'disconnected':
+        return { icon: '🔴', text: 'Disconnected', className: 'status-disconnected' }
+      case 'connecting':
+        return { icon: '🟡', text: 'Connecting...', className: 'status-connecting' }
+      default:
+        return { icon: '🟡', text: 'Connecting...', className: 'status-connecting' }
+    }
+  }
+
   return (
     <div className="app">
       <header className="header">
@@ -47,15 +114,13 @@ function App() {
       <div className="container">
         {loading && <div className="loading">Loading traces...</div>}
         
-        {error && (
-          <div className="error">
-            Error: {error}
-            <button onClick={fetchTraces}>Retry</button>
-          </div>
-        )}
-
-        {!loading && !error && traces.length === 0 && (
+        {!loading && traces.length === 0 && (
           <div className="empty-state">
+            <div className="connection-status-banner">
+              <span className={`status-indicator ${getConnectionStatusDisplay().className}`}>
+                {getConnectionStatusDisplay().icon} {getConnectionStatusDisplay().text}
+              </span>
+            </div>
             <h2>No traces yet</h2>
             <p>Send a POST request to /api/traces to create your first trace</p>
             <pre className="code-block">
@@ -73,14 +138,23 @@ function App() {
           </div>
         )}
 
-        {!loading && !error && traces.length > 0 && (
+        {!loading && traces.length > 0 && (
           <div className="content">
             <div className="traces-list">
               <div className="list-header">
-                <h2>Recent Traces ({traces.length})</h2>
-                <button onClick={fetchTraces} className="refresh-btn">
-                  🔄 Refresh
-                </button>
+                <h2>
+                  Recent Traces ({traces.length})
+                  {newTracesCount > 0 && (
+                    <span className="new-badge" onClick={handleDismissNewBadge}>
+                      +{newTracesCount} new
+                    </span>
+                  )}
+                </h2>
+                <div className="header-controls">
+                  <span className={`connection-status ${getConnectionStatusDisplay().className}`}>
+                    {getConnectionStatusDisplay().icon} {getConnectionStatusDisplay().text}
+                  </span>
+                </div>
               </div>
               
               {traces.map((trace) => (

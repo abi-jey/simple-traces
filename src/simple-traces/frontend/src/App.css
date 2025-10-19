@@ -119,20 +119,98 @@
 .list-header h2 {
   color: #333;
   font-size: 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
-.refresh-btn {
-  padding: 0.5rem 1rem;
-  background: #667eea;
+.header-controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.new-badge {
+  background: #4caf50;
   color: white;
-  border: none;
-  border-radius: 4px;
+  padding: 0.25rem 0.75rem;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  animation: pulse 2s ease-in-out infinite;
   cursor: pointer;
-  font-size: 0.9rem;
+  transition: opacity 0.2s;
 }
 
-.refresh-btn:hover {
-  background: #5568d3;
+.new-badge:hover {
+  opacity: 0.8;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.connection-status {
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.status-connected {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.status-disconnected {
+  background: #ffebee;
+  color: #c62828;
+  animation: pulse-error 2s ease-in-out infinite;
+}
+
+.status-connecting {
+  background: #fff3e0;
+  color: #ef6c00;
+  animation: pulse-warning 2s ease-in-out infinite;
+}
+
+@keyframes pulse-error {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+@keyframes pulse-warning {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
+.connection-status-banner {
+  margin-bottom: 1rem;
+  text-align: center;
+}
+
+.status-indicator {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  font-weight: 500;
 }
 
 .trace-item {
