@@ -69,6 +69,15 @@ func Run() error {
 
 	addr := ":" + config.Port
 	logger.Info("Server starting on %s", addr)
+
+	// Print a clickable URL for local development
+	baseURL := fmt.Sprintf("http://localhost:%s", config.Port)
+	logger.Info("Open in your browser: %s", baseURL)
+	logger.Debug("Alternative: http://127.0.0.1:%s", config.Port)
+	logger.Debug("API base: %s/api", baseURL)
+	if config.OTLPEnabled {
+		logger.Info("OTLP ingest endpoint: %s/v1/traces", baseURL)
+	}
 	if err := http.ListenAndServe(addr, router); err != nil {
 		logger.Error("Server failed to start: %v", err)
 		return fmt.Errorf("listen and serve: %w", err)
