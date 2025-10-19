@@ -351,18 +351,7 @@ func importSpansJSONLHandler(db Database, logger *Logger) http.HandlerFunc {
 					attrRows = append(attrRows, ar...)
 					// derive conversation id from attrs
 					if cid := deriveConversationID(ar); cid != "" {
-						cu := convAgg[cid]
-						if cu == nil {
-							convAgg[cid] = &ConversationUpdate{ID: cid, Start: sp.StartTime, End: sp.EndTime, Count: 1}
-						} else {
-							if sp.StartTime.Before(cu.Start) {
-								cu.Start = sp.StartTime
-							}
-							if sp.EndTime.After(cu.End) {
-								cu.End = sp.EndTime
-							}
-							cu.Count += 1
-						}
+						aggregateConversation(convAgg, cid, sp, "")
 					}
 				} else {
 					logger.Warn("skip invalid span: %v", err)
@@ -401,18 +390,7 @@ func importSpansJSONLHandler(db Database, logger *Logger) http.HandlerFunc {
 				spans = append(spans, sp)
 				attrRows = append(attrRows, ar...)
 				if cid := deriveConversationID(ar); cid != "" {
-					cu := convAgg[cid]
-					if cu == nil {
-						convAgg[cid] = &ConversationUpdate{ID: cid, Start: sp.StartTime, End: sp.EndTime, Count: 1}
-					} else {
-						if sp.StartTime.Before(cu.Start) {
-							cu.Start = sp.StartTime
-						}
-						if sp.EndTime.After(cu.End) {
-							cu.End = sp.EndTime
-						}
-						cu.Count += 1
-					}
+					aggregateConversation(convAgg, cid, sp, "")
 				}
 			}
 			if err := scanner.Err(); err != nil {
@@ -785,6 +763,31 @@ func propagateConversationIDs(db Database, logger *Logger, spans []Span, convAgg
 			if _, err := db.PropagateConversationID(sp.TraceID, cid); err != nil {
 				logger.Warn("propagate conversation id failed trace=%s cid=%s: %v", sp.TraceID, cid, err)
 			}
+		}
+	}
+}
+
+// aggregateConversation updates or creates a conversation aggregate for a span
+func aggregateConversation(convAgg map[string]*ConversationUpdate, cid string, span Span, model string) {
+	cu := convAgg[cid]
+	if cu == nil {
+		convAgg[cid] = &ConversationUpdate{
+			ID:    cid,
+			Start: span.StartTime,
+			End:   span.EndTime,
+			Count: 1,
+			Model: model,
+		}
+	} else {
+		if span.StartTime.Before(cu.Start) {
+			cu.Start = span.StartTime
+		}
+		if span.EndTime.After(cu.End) {
+			cu.End = span.EndTime
+		}
+		cu.Count++
+		if strings.TrimSpace(cu.Model) == "" && strings.TrimSpace(model) != "" {
+			cu.Model = model
 		}
 	}
 }

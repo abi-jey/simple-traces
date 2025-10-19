@@ -82,27 +82,8 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				spansProcessed++
 
 				// derive conversation id
-				convID := deriveConversationID(spanAttrs)
-				if convID != "" {
-					cu := convAgg[convID]
-					start := spanRow.StartTime
-					end := spanRow.EndTime
-					// try model from traceEntry
-					model := traceEntry.Model
-					if cu == nil {
-						convAgg[convID] = &ConversationUpdate{ID: convID, Start: start, End: end, Count: 1, Model: model}
-					} else {
-						if start.Before(cu.Start) {
-							cu.Start = start
-						}
-						if end.After(cu.End) {
-							cu.End = end
-						}
-						cu.Count += 1
-						if strings.TrimSpace(cu.Model) == "" && strings.TrimSpace(model) != "" {
-							cu.Model = model
-						}
-					}
+				if convID := deriveConversationID(spanAttrs); convID != "" {
+					aggregateConversation(convAgg, convID, spanRow, traceEntry.Model)
 				}
 			}
 		}
@@ -118,17 +99,11 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// upsert conversations
 	if len(convAgg) > 0 {
+		propagateConversationIDs(h.db, h.logger, spanRows, convAgg)
+		
 		updates := make([]ConversationUpdate, 0, len(convAgg))
-		for cid, v := range convAgg {
+		for _, v := range convAgg {
 			updates = append(updates, *v)
-			// also propagate this conversation id to all spans that share the same trace id if missing
-			// we use the span trace_id as fallback linkage: update after inserts
-			for _, sp := range spanRows {
-				// propagate for spans that occurred in this batch with the same conversation id found
-				// Note: deriveConversationID used attributes only; here we ensure every span under the same OTLP trace
-				// gets the conv id if not already present.
-				_, _ = h.db.PropagateConversationID(sp.TraceID, cid)
-			}
 		}
 		if err := h.db.BatchUpsertConversations(updates); err != nil {
 			h.logger.Error("Failed to upsert conversations: %v", err)
