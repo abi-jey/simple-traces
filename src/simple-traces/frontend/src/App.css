@@ -87,7 +87,7 @@
   padding: 0.875rem;
   text-align: left;
   overflow-x: auto;
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
   line-height: 1.5;
 }
 
@@ -263,7 +263,7 @@
 
 .trace-preview {
   color: #666;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   margin-bottom: 0.5rem;
   line-height: 1.5;
 }
@@ -348,7 +348,7 @@
   padding: 0.875rem;
   white-space: pre-wrap;
   word-wrap: break-word;
-  font-size: 0.8125rem;
+  font-size: 0.875rem;
   line-height: 1.6;
   color: #333;
   max-height: 300px;
@@ -381,6 +381,6 @@
 
 .stat-value {
   color: #333;
-  font-size: 0.9375rem;
+  font-size: 1rem;
   font-weight: 600;
 }
