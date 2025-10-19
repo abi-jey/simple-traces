@@ -1,0 +1,58 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: simple-traces
+  annotations:
+    # NOTE: Cluster-specific default tolerations for this namespace; adjust/remove for your environment if unsupported.
+    # Some clusters may not recognize this alpha annotation.
+    scheduler.alpha.kubernetes.io/defaultTolerations: '[{"operator":"Exists", "effect":"NoSchedule"}]'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simple-traces
+  namespace: simple-traces
+  labels:
+    app: simple-traces
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: simple-traces
+  template:
+    metadata:
+      labels:
+        app: simple-traces
+    spec:
+      containers:
+        - name: simple-traces
+          image: ghcr.io/abi-jey/simple-traces:latest-dev
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: DB_TYPE
+              value: sqlite
+            - name: DB_CONNECTION
+              value: /data/traces.db
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 20
