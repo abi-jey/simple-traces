@@ -1,0 +1,76 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "go build simple-traces",
+			"type": "shell",
+			"command": "go build ./...",
+			"isBackground": false,
+			"problemMatcher": [
+				"$go"
+			],
+			"group": "build"
+		},
+		{
+			"label": "go build simple-traces (rebuild)",
+			"type": "shell",
+			"command": "go build ./...",
+			"isBackground": false,
+			"problemMatcher": [
+				"$go"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build frontend",
+			"type": "shell",
+			"command": "[ -d src/simple-traces/frontend/dist ] || (cd src/simple-traces/frontend && npm ci && npm run build)",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "go build (final)",
+			"type": "shell",
+			"command": "go build ./...",
+			"isBackground": false,
+			"problemMatcher": [
+				"$go"
+			],
+			"group": "build"
+		},
+		{
+			"label": "build frontend (rebuild)",
+			"type": "shell",
+			"command": "cd src/simple-traces/frontend && npm run build",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build frontend (delete-btn)",
+			"type": "shell",
+			"command": "cd src/simple-traces/frontend && npm run build",
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "build (api+ui search)",
+			"type": "shell",
+			"command": "go build ./... && cd src/simple-traces/frontend && npm run build",
+			"isBackground": false,
+			"problemMatcher": [
+				"$go"
+			],
+			"group": "build"
+		},
+		{
+			"label": "go build (grouping by conversation id)",
+			"type": "shell",
+			"command": "go build ./...",
+			"isBackground": false,
+			"problemMatcher": [
+				"$go"
+			],
+			"group": "build"
+		}
+	]
+}

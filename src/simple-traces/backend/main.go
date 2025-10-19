@@ -60,6 +60,14 @@ func Run() error {
 	api.HandleFunc("/spans", getSpansHandler(db, logger)).Methods("GET")
 	api.HandleFunc("/spans/import", importSpansJSONLHandler(db, logger)).Methods("POST")
 
+	// Grouped traces (OTLP trace_id)
+	api.HandleFunc("/trace-groups", getTraceGroupsHandler(db, logger)).Methods("GET")
+	api.HandleFunc("/trace-groups/{trace_id}", getTraceGroupSpansHandler(db, logger)).Methods("GET")
+	api.HandleFunc("/trace-groups/{trace_id}", deleteTraceGroupHandler(db, logger)).Methods("DELETE")
+
+	// Conversations API
+	api.HandleFunc("/conversations", getConversationsHandler(db, logger)).Methods("GET")
+
 	// OpenTelemetry OTLP endpoint
 	if config.OTLPEnabled {
 		otlpHandler := NewOTLPHandler(db, logger)
@@ -298,6 +306,9 @@ func deleteTraceHandler(db Database, logger *Logger) http.HandlerFunc {
 					if _, err := db.DeleteSpansByTraceID(otlpID); err != nil {
 						logger.Warn("Failed deleting spans for otlp trace %s: %v", otlpID, err)
 					}
+					if _, err := db.DeleteSpanAttributesByTraceID(otlpID); err != nil {
+						logger.Warn("Failed deleting span_attributes for otlp trace %s: %v", otlpID, err)
+					}
 				}
 			}
 		}
@@ -356,10 +367,28 @@ func importSpansJSONLHandler(db Database, logger *Logger) http.HandlerFunc {
 			return
 		}
 		var spans []Span
+		var attrRows []SpanAttribute
+		convAgg := make(map[string]*ConversationUpdate)
 		if len(req.Spans) > 0 {
 			for _, raw := range req.Spans {
-				if sp, err := spanFromRaw(raw); err == nil {
+				if sp, ar, err := spanFromRaw(raw); err == nil {
 					spans = append(spans, sp)
+					attrRows = append(attrRows, ar...)
+					// derive conversation id from attrs
+					if cid := deriveConversationID(ar); cid != "" {
+						cu := convAgg[cid]
+						if cu == nil {
+							convAgg[cid] = &ConversationUpdate{ID: cid, Start: sp.StartTime, End: sp.EndTime, Count: 1}
+						} else {
+							if sp.StartTime.Before(cu.Start) {
+								cu.Start = sp.StartTime
+							}
+							if sp.EndTime.After(cu.End) {
+								cu.End = sp.EndTime
+							}
+							cu.Count += 1
+						}
+					}
 				} else {
 					logger.Warn("skip invalid span: %v", err)
 				}
@@ -389,12 +418,27 @@ func importSpansJSONLHandler(db Database, logger *Logger) http.HandlerFunc {
 					logger.Warn("bad jsonl line: %v", err)
 					continue
 				}
-				sp, err := spanFromRaw(raw)
+				sp, ar, err := spanFromRaw(raw)
 				if err != nil {
 					logger.Warn("skip invalid span: %v", err)
 					continue
 				}
 				spans = append(spans, sp)
+				attrRows = append(attrRows, ar...)
+				if cid := deriveConversationID(ar); cid != "" {
+					cu := convAgg[cid]
+					if cu == nil {
+						convAgg[cid] = &ConversationUpdate{ID: cid, Start: sp.StartTime, End: sp.EndTime, Count: 1}
+					} else {
+						if sp.StartTime.Before(cu.Start) {
+							cu.Start = sp.StartTime
+						}
+						if sp.EndTime.After(cu.End) {
+							cu.End = sp.EndTime
+						}
+						cu.Count += 1
+					}
+				}
 			}
 			if err := scanner.Err(); err != nil {
 				http.Error(w, fmt.Sprintf("scan jsonl: %v", err), http.StatusBadRequest)
@@ -410,19 +454,33 @@ func importSpansJSONLHandler(db Database, logger *Logger) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("failed to save spans: %v", err), http.StatusInternalServerError)
 			return
 		}
+		if err := db.BatchUpsertSpanAttributes(attrRows); err != nil {
+			logger.Error("batch upsert span attributes: %v", err)
+			http.Error(w, fmt.Sprintf("failed to save span attributes: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if len(convAgg) > 0 {
+			updates := make([]ConversationUpdate, 0, len(convAgg))
+			for _, v := range convAgg {
+				updates = append(updates, *v)
+			}
+			if err := db.BatchUpsertConversations(updates); err != nil {
+				logger.Error("batch upsert conversations: %v", err)
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"inserted": len(spans)})
+		json.NewEncoder(w).Encode(map[string]any{"inserted": len(spans), "attributes": len(attrRows)})
 	}
 }
 
 // spanFromRaw maps the sample JSON span shape to our Span struct
-func spanFromRaw(raw map[string]any) (Span, error) {
+func spanFromRaw(raw map[string]any) (Span, []SpanAttribute, error) {
 	// Required fields
 	name, _ := raw["name"].(string)
 	traceID, _ := raw["trace_id"].(string)
 	spanID, _ := raw["span_id"].(string)
 	if name == "" || traceID == "" || spanID == "" {
-		return Span{}, fmt.Errorf("missing required fields")
+		return Span{}, nil, fmt.Errorf("missing required fields")
 	}
 	// times are in UnixNano per sample
 	var start, end time.Time
@@ -456,7 +514,7 @@ func spanFromRaw(raw map[string]any) (Span, error) {
 		}
 	}
 	if start.IsZero() || end.IsZero() {
-		return Span{}, fmt.Errorf("invalid timestamps")
+		return Span{}, nil, fmt.Errorf("invalid timestamps")
 	}
 	dur := end.Sub(start).Milliseconds()
 
@@ -474,9 +532,72 @@ func spanFromRaw(raw map[string]any) (Span, error) {
 
 	// attributes/events
 	var attrsStr, eventsStr string
+	var attrRows []SpanAttribute
 	if attrs, ok := raw["attributes"].(map[string]any); ok {
-		if b, err := json.Marshal(attrs); err == nil {
+		// Flatten JSONL attributes then marshal for storage
+		flat := FlattenAttrs(attrs)
+		if b, err := json.Marshal(flat); err == nil {
 			attrsStr = string(b)
+		}
+		// Build typed attribute rows
+		for k, v := range flat {
+			at := AttrType(v)
+			a := SpanAttribute{SpanID: spanID, TraceID: traceID, Key: k, Type: at}
+			switch at {
+			case "string":
+				s := fmt.Sprintf("%v", v)
+				a.StringVal = &s
+			case "bool":
+				if b, ok := v.(bool); ok {
+					a.BoolVal = &b
+				} else {
+					s := fmt.Sprintf("%v", v)
+					a.Type = "string"
+					a.StringVal = &s
+				}
+			case "int":
+				switch n := v.(type) {
+				case int64:
+					a.IntVal = &n
+				case int:
+					nn := int64(n)
+					a.IntVal = &nn
+				case float64:
+					nn := int64(n)
+					a.IntVal = &nn
+				default:
+					s := fmt.Sprintf("%v", v)
+					a.Type = "string"
+					a.StringVal = &s
+				}
+			case "float":
+				switch n := v.(type) {
+				case float64:
+					a.FloatVal = &n
+				case float32:
+					f := float64(n)
+					a.FloatVal = &f
+				case int64:
+					f := float64(n)
+					a.FloatVal = &f
+				case int:
+					f := float64(n)
+					a.FloatVal = &f
+				default:
+					s := fmt.Sprintf("%v", v)
+					a.Type = "string"
+					a.StringVal = &s
+				}
+			case "array", "object", "null":
+				b, _ := json.Marshal(v)
+				s := string(b)
+				a.JSONVal = &s
+			default:
+				s := fmt.Sprintf("%v", v)
+				a.Type = "string"
+				a.StringVal = &s
+			}
+			attrRows = append(attrRows, a)
 		}
 	}
 	if events, ok := raw["events"].([]any); ok {
@@ -485,7 +606,7 @@ func spanFromRaw(raw map[string]any) (Span, error) {
 		}
 	}
 
-	return Span{
+	sp := Span{
 		SpanID:     spanID,
 		TraceID:    traceID,
 		Name:       name,
@@ -496,7 +617,8 @@ func spanFromRaw(raw map[string]any) (Span, error) {
 		StatusDesc: statusDesc,
 		Attributes: attrsStr,
 		Events:     eventsStr,
-	}, nil
+	}
+	return sp, attrRows, nil
 }
 
 // decodeJSONLineUseNumber decodes a JSON line preserving large numbers as json.Number
@@ -508,4 +630,119 @@ func decodeJSONLineUseNumber(line string) (map[string]any, error) {
 		return nil, err
 	}
 	return raw, nil
+}
+
+// getTraceGroupsHandler returns groups of spans by trace_id, ordered by most recent activity
+func getTraceGroupsHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		limit := 100
+		if s := strings.TrimSpace(q.Get("limit")); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				limit = v
+			}
+		}
+		var before time.Time
+		if sb := strings.TrimSpace(q.Get("before")); sb != "" {
+			if t, err := time.Parse(time.RFC3339Nano, sb); err == nil {
+				before = t
+			} else if t, err := time.Parse(time.RFC3339, sb); err == nil {
+				before = t
+			}
+		}
+		search := strings.TrimSpace(q.Get("q"))
+		groups, err := db.GetTraceGroups(limit, before)
+		if search != "" {
+			groups, err = db.GetTraceGroupsWithSearch(limit, before, search)
+		}
+		if err != nil {
+			logger.Error("Failed to get trace groups: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to get trace groups: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(groups)
+	}
+}
+
+// getTraceGroupSpansHandler returns spans for a specific trace_id ordered as a continuous thread
+func getTraceGroupSpansHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		traceID := vars["trace_id"]
+		limit := 2000
+		if s := strings.TrimSpace(r.URL.Query().Get("limit")); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				limit = v
+			}
+		}
+		search := strings.TrimSpace(r.URL.Query().Get("q"))
+		spans, err := db.GetTraceGroupSpans(traceID, limit)
+		if search != "" {
+			spans, err = db.GetTraceGroupSpansWithSearch(traceID, limit, search)
+		}
+		if err != nil {
+			logger.Error("Failed to get group spans: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to get group spans: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(spans)
+	}
+}
+
+// deleteTraceGroupHandler deletes all spans for a given trace_id (trace group)
+func deleteTraceGroupHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		groupID := strings.TrimSpace(vars["trace_id"]) // using same param name for compatibility
+		if groupID == "" {
+			http.Error(w, "missing trace_id", http.StatusBadRequest)
+			return
+		}
+		// Delete by conversation group id (new grouping)
+		deleted, err := db.DeleteSpansByGroupID(groupID)
+		if err != nil {
+			logger.Error("Failed to delete trace group %s: %v", groupID, err)
+			http.Error(w, fmt.Sprintf("Failed to delete group: %v", err), http.StatusInternalServerError)
+			return
+		}
+		if _, err := db.DeleteSpanAttributesByGroupID(groupID); err != nil {
+			logger.Warn("Failed to delete span attributes for group %s: %v", groupID, err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"deleted": deleted,
+		})
+	}
+}
+
+// getConversationsHandler returns paginated conversations ordered by last_end_time DESC
+func getConversationsHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		limit := 100
+		if s := strings.TrimSpace(q.Get("limit")); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				limit = v
+			}
+		}
+		var before time.Time
+		if sb := strings.TrimSpace(q.Get("before")); sb != "" {
+			if t, err := time.Parse(time.RFC3339Nano, sb); err == nil {
+				before = t
+			} else if t, err := time.Parse(time.RFC3339, sb); err == nil {
+				before = t
+			}
+		}
+		convs, err := db.GetConversations(limit, before)
+		if err != nil {
+			logger.Error("Failed to get conversations: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to get conversations: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(convs)
+	}
 }

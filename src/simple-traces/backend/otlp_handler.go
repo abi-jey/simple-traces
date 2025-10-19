@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/protobuf/proto"
 
 	tracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -65,17 +65,45 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	spansProcessed := 0
 	// Collect spans for batch insert for efficiency
 	var spanRows []Span
+	var attrRows []SpanAttribute
+	// collect conversation aggregates for batch upsert
+	convAgg := make(map[string]*ConversationUpdate)
 	for _, rs := range req.ResourceSpans {
 		for _, ss := range rs.ScopeSpans {
 			for _, span := range ss.Spans {
 				// Create trace entry and span row
-				traceEntry, spanRow := h.transformSpan(span, rs.Resource)
+				traceEntry, spanRow, spanAttrs := h.transformSpan(span, rs.Resource)
 				// Store trace for frontend compatibility
 				if _, err := h.db.CreateTrace(traceEntry); err != nil {
 					h.logger.Error("Failed to store trace from OTLP span: %v", err)
 				}
 				spanRows = append(spanRows, spanRow)
+				attrRows = append(attrRows, spanAttrs...)
 				spansProcessed++
+
+				// derive conversation id
+				convID := deriveConversationID(spanAttrs)
+				if convID != "" {
+					cu := convAgg[convID]
+					start := spanRow.StartTime
+					end := spanRow.EndTime
+					// try model from traceEntry
+					model := traceEntry.Model
+					if cu == nil {
+						convAgg[convID] = &ConversationUpdate{ID: convID, Start: start, End: end, Count: 1, Model: model}
+					} else {
+						if start.Before(cu.Start) {
+							cu.Start = start
+						}
+						if end.After(cu.End) {
+							cu.End = end
+						}
+						cu.Count += 1
+						if strings.TrimSpace(cu.Model) == "" && strings.TrimSpace(model) != "" {
+							cu.Model = model
+						}
+					}
+				}
 			}
 		}
 	}
@@ -83,6 +111,20 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Batch insert spans
 	if err := h.db.BatchInsertSpans(spanRows); err != nil {
 		h.logger.Error("Failed to batch insert %d spans: %v", len(spanRows), err)
+	}
+	if err := h.db.BatchUpsertSpanAttributes(attrRows); err != nil {
+		h.logger.Error("Failed to upsert %d span attributes: %v", len(attrRows), err)
+	}
+
+	// upsert conversations
+	if len(convAgg) > 0 {
+		updates := make([]ConversationUpdate, 0, len(convAgg))
+		for _, v := range convAgg {
+			updates = append(updates, *v)
+		}
+		if err := h.db.BatchUpsertConversations(updates); err != nil {
+			h.logger.Error("Failed to upsert conversations: %v", err)
+		}
 	}
 
 	h.logger.Info("Successfully processed %d spans from OTLP export", spansProcessed)
@@ -101,22 +143,64 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(respBytes)
 }
 
+// deriveConversationID picks a conversation id from preferred keys in span attributes
+func deriveConversationID(attrs []SpanAttribute) string {
+	// scan by preference order among flattened attributes keys
+	pref := []string{
+		"gcp.vertex.agent.session_id",
+		"gen_ai.conversation.id",
+		"conversation.id",
+		"conversation_id",
+		"session.conversation_id",
+		"session.id",
+		"chat.id",
+		"thread.id",
+	}
+	// Build a quick lookup of key->string
+	m := make(map[string]string, len(attrs))
+	for _, a := range attrs {
+		if a.Type == "string" && a.StringVal != nil {
+			m[a.Key] = *a.StringVal
+		} else if a.Type == "int" && a.IntVal != nil {
+			m[a.Key] = fmt.Sprintf("%d", *a.IntVal)
+		} else if a.Type == "float" && a.FloatVal != nil {
+			m[a.Key] = fmt.Sprintf("%g", *a.FloatVal)
+		}
+	}
+	for _, k := range pref {
+		if v, ok := m[k]; ok && strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // transformSpan converts an OTLP span to our Trace and Span structs
-func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.Resource) (Trace, Span) {
+func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.Resource) (Trace, Span, []SpanAttribute) {
 	h.logger.Debug("Processing OTLP span: %s", span.Name)
 
 	// Extract attributes into a map
 	attrs := make(map[string]interface{})
 	for _, attr := range span.Attributes {
-		kv := convertOTLPAttribute(attr)
-		attrs[string(kv.Key)] = attrValueToInterface(kv.Value)
+		if attr == nil {
+			continue
+		}
+		attrs[attr.Key] = anyValueToInterface(attr.Value)
 	}
 
 	// Also add resource attributes
 	if resource != nil {
 		for _, attr := range resource.Attributes {
-			kv := convertOTLPAttribute(attr)
-			attrs["resource."+string(kv.Key)] = attrValueToInterface(kv.Value)
+			if attr == nil {
+				continue
+			}
+			key := attr.Key
+			val := anyValueToInterface(attr.Value)
+			attrs["resource."+key] = val
+			// Also propagate to top-level if not present already
+			if _, exists := attrs[key]; !exists {
+				attrs[key] = val
+			}
 		}
 	}
 
@@ -197,8 +281,10 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 			if len(event.Attributes) > 0 {
 				eventAttrs := make(map[string]interface{})
 				for _, attr := range event.Attributes {
-					kv := convertOTLPAttribute(attr)
-					eventAttrs[string(kv.Key)] = attrValueToInterface(kv.Value)
+					if attr == nil {
+						continue
+					}
+					eventAttrs[attr.Key] = anyValueToInterface(attr.Value)
 				}
 				eventData["attributes"] = eventAttrs
 			}
@@ -207,7 +293,9 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 		attrs["span.events"] = events
 	}
 
-	metadataJSON, _ := json.Marshal(attrs)
+	// Flatten attributes for metadata and typed storage
+	flat := FlattenAttrs(attrs)
+	metadataJSON, _ := json.Marshal(flat)
 
 	// Create trace entry
 	traceEntry := Trace{
@@ -221,10 +309,10 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 		Timestamp:    startTime,
 	}
 
-	// Build span row
+	// Build span row: store flattened attributes (without events) as JSON for display
 	attrsOnly := make(map[string]interface{})
-	// Keep the original attributes except calculated fields like span.name, ids, status; events are handled separately
-	for k, v := range attrs {
+	// Keep the flattened attributes except events (handled separately)
+	for k, v := range flat {
 		switch k {
 		case "span.events":
 			// handled below
@@ -255,7 +343,73 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 		spanRow.StatusDesc = span.Status.Message
 	}
 
-	return traceEntry, spanRow
+	// Build typed span attributes rows from flattened map
+	var attrRows []SpanAttribute
+	for k, v := range attrsOnly {
+		// Skip IDs if present as attributesOnly
+		if k == "span.id" || k == "trace.id" {
+			continue
+		}
+		a := SpanAttribute{SpanID: spanRow.SpanID, TraceID: spanRow.TraceID, Key: k, Type: AttrType(v)}
+		switch a.Type {
+		case "string":
+			s := fmt.Sprintf("%v", v)
+			a.StringVal = &s
+		case "bool":
+			if b, ok := v.(bool); ok {
+				a.BoolVal = &b
+			} else {
+				// fallback to string
+				s := fmt.Sprintf("%v", v)
+				a.Type = "string"
+				a.StringVal = &s
+			}
+		case "int":
+			switch n := v.(type) {
+			case int64:
+				a.IntVal = &n
+			case int:
+				nn := int64(n)
+				a.IntVal = &nn
+			case float64:
+				nn := int64(n)
+				a.IntVal = &nn
+			default:
+				s := fmt.Sprintf("%v", v)
+				a.Type = "string"
+				a.StringVal = &s
+			}
+		case "float":
+			switch n := v.(type) {
+			case float64:
+				a.FloatVal = &n
+			case float32:
+				f := float64(n)
+				a.FloatVal = &f
+			case int64:
+				f := float64(n)
+				a.FloatVal = &f
+			case int:
+				f := float64(n)
+				a.FloatVal = &f
+			default:
+				s := fmt.Sprintf("%v", v)
+				a.Type = "string"
+				a.StringVal = &s
+			}
+		case "array", "object", "null":
+			b, _ := json.Marshal(v)
+			s := string(b)
+			a.JSONVal = &s
+		default:
+			s := fmt.Sprintf("%v", v)
+			a.Type = "string"
+			a.StringVal = &s
+		}
+		attrRows = append(attrRows, a)
+	}
+
+	return traceEntry, spanRow, attrRows
 }
 
 func spanKindToString(kind tracepbv1.Span_SpanKind) string {
@@ -286,58 +440,47 @@ func statusCodeToString(code tracepbv1.Status_StatusCode) string {
 	}
 }
 
-// convertOTLPAttribute converts an OTLP attribute to an OpenTelemetry attribute
-func convertOTLPAttribute(attr *commonpb.KeyValue) attribute.KeyValue {
-	key := attribute.Key(attr.Key)
-
-	switch v := attr.Value.Value.(type) {
-	case *commonpb.AnyValue_StringValue:
-		return key.String(v.StringValue)
-	case *commonpb.AnyValue_BoolValue:
-		return key.Bool(v.BoolValue)
-	case *commonpb.AnyValue_IntValue:
-		return key.Int64(v.IntValue)
-	case *commonpb.AnyValue_DoubleValue:
-		return key.Float64(v.DoubleValue)
-	case *commonpb.AnyValue_ArrayValue:
-		// Convert array to string representation for now
-		return key.String(fmt.Sprintf("%v", v.ArrayValue))
-	case *commonpb.AnyValue_KvlistValue:
-		// Convert key-value list to string representation for now
-		return key.String(fmt.Sprintf("%v", v.KvlistValue))
-	case *commonpb.AnyValue_BytesValue:
-		// Convert bytes to string
-		return key.String(string(v.BytesValue))
-	default:
-		// Log warning for truly unknown types
-		return key.String(fmt.Sprintf("<unsupported type: %T>", v))
+// anyValueToInterface converts an OTLP AnyValue into native Go types while preserving arrays and objects
+func anyValueToInterface(v *commonpb.AnyValue) interface{} {
+	if v == nil {
+		return nil
 	}
-}
-
-// attrValueToInterface converts an attribute.Value to a Go interface{}
-// It handles all OpenTelemetry attribute types including:
-// - Primitive types (bool, int64, float64, string)
-// - Slice types ([]bool, []int64, []float64, []string)
-// For unsupported types, it falls back to string conversion using AsString()
-func attrValueToInterface(v attribute.Value) interface{} {
-	switch v.Type() {
-	case attribute.BOOL:
-		return v.AsBool()
-	case attribute.INT64:
-		return v.AsInt64()
-	case attribute.FLOAT64:
-		return v.AsFloat64()
-	case attribute.STRING:
-		return v.AsString()
-	case attribute.BOOLSLICE:
-		return v.AsBoolSlice()
-	case attribute.INT64SLICE:
-		return v.AsInt64Slice()
-	case attribute.FLOAT64SLICE:
-		return v.AsFloat64Slice()
-	case attribute.STRINGSLICE:
-		return v.AsStringSlice()
+	switch vv := v.Value.(type) {
+	case *commonpb.AnyValue_StringValue:
+		return vv.StringValue
+	case *commonpb.AnyValue_BoolValue:
+		return vv.BoolValue
+	case *commonpb.AnyValue_IntValue:
+		return vv.IntValue
+	case *commonpb.AnyValue_DoubleValue:
+		return vv.DoubleValue
+	case *commonpb.AnyValue_BytesValue:
+		// Keep bytes as base64 string for readability
+		return string(vv.BytesValue)
+	case *commonpb.AnyValue_ArrayValue:
+		arr := vv.ArrayValue
+		if arr == nil {
+			return []any{}
+		}
+		out := make([]any, 0, len(arr.Values))
+		for _, elem := range arr.Values {
+			out = append(out, anyValueToInterface(elem))
+		}
+		return out
+	case *commonpb.AnyValue_KvlistValue:
+		kv := vv.KvlistValue
+		if kv == nil {
+			return map[string]any{}
+		}
+		m := make(map[string]any, len(kv.Values))
+		for _, kvp := range kv.Values {
+			if kvp == nil {
+				continue
+			}
+			m[kvp.Key] = anyValueToInterface(kvp.Value)
+		}
+		return m
 	default:
-		return v.AsString()
+		return fmt.Sprintf("<unsupported type: %T>", vv)
 	}
 }
