@@ -658,20 +658,130 @@ html, body, #root {
 .search-input::placeholder { 
   color: var(--muted); 
 }
+
+/* Enhanced theme toggle with custom animation */
 .theme-toggle { 
-  background: var(--panel); 
-  border: 1px solid var(--border); 
-  color: var(--text); 
-  border-radius: 12px; 
-  padding: 0.5rem 0.75rem; 
+  position: relative;
+  background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
+  border: none;
+  border-radius: 50px; 
+  padding: 0;
+  width: 70px;
+  height: 36px;
   cursor: pointer; 
-  transition: all 0.2s ease;
-  font-size: 1.1rem;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3), inset 0 2px 4px rgba(255, 255, 255, 0.1);
+  overflow: hidden;
 }
+
+.theme-toggle::before {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 30px;
+  height: 30px;
+  background: linear-gradient(135deg, #fbbf24, #f59e0b);
+  border-radius: 50%;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 8px rgba(251, 191, 36, 0.5), inset 0 -2px 4px rgba(245, 158, 11, 0.5);
+  z-index: 2;
+}
+
+.theme-toggle .toggle-icon {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 1rem;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 1;
+}
+
+.theme-toggle .sun-icon {
+  left: 10px;
+  opacity: 1;
+  transform: translateY(-50%) rotate(0deg) scale(1);
+}
+
+.theme-toggle .moon-icon {
+  right: 10px;
+  opacity: 0;
+  transform: translateY(-50%) rotate(-180deg) scale(0.5);
+}
+
 .theme-toggle:hover { 
-  background: var(--panel-alt); 
-  border-color: var(--primary);
-  transform: scale(1.05);
+  transform: scale(1.08);
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.5), inset 0 2px 4px rgba(255, 255, 255, 0.2);
+}
+
+.theme-toggle:active {
+  transform: scale(0.98);
+}
+
+/* Dark theme state */
+[data-theme="dark"] .theme-toggle {
+  background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5), inset 0 2px 4px rgba(255, 255, 255, 0.05);
+}
+
+[data-theme="dark"] .theme-toggle::before {
+  left: calc(100% - 33px);
+  background: linear-gradient(135deg, #e0f2fe, #bae6fd);
+  box-shadow: 0 2px 8px rgba(186, 230, 253, 0.6), inset 0 -2px 4px rgba(224, 242, 254, 0.3);
+}
+
+[data-theme="dark"] .theme-toggle .sun-icon {
+  opacity: 0;
+  transform: translateY(-50%) rotate(180deg) scale(0.5);
+}
+
+[data-theme="dark"] .theme-toggle .moon-icon {
+  opacity: 1;
+  transform: translateY(-50%) rotate(0deg) scale(1);
+}
+
+[data-theme="dark"] .theme-toggle:hover {
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.7), inset 0 2px 4px rgba(255, 255, 255, 0.1);
+}
+
+/* Bounce animation on toggle */
+@keyframes toggleBounce {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+
+.theme-toggle.toggling {
+  animation: toggleBounce 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Ripple effect */
+@keyframes ripple {
+  0% {
+    transform: scale(0);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2.5);
+    opacity: 0;
+  }
+}
+
+.theme-toggle::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100%;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  transform: translate(-50%, -50%) scale(0);
+  pointer-events: none;
+}
+
+.theme-toggle:active::after {
+  animation: ripple 0.6s ease-out;
 }
 
 /* Projects page */
