@@ -48,6 +48,9 @@ frontend/dist/
 frontend/dist-ssr/
 *.local
 
+# Backend embedded frontend (copied during build)
+backend/frontend/
+
 # Logs
 logs
 *.log

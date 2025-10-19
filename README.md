@@ -4,12 +4,14 @@ A lightweight LLM tracing tool with support for SQLite (no DB requirement) or Po
 
 ## Features
 
-- 🚀 **Simple API** - Single endpoint to collect LLM traces
+- 🚀 **Simple API** - REST endpoint to collect LLM traces
+- 📡 **OpenTelemetry Support** - Native OTLP receiver for trace collection
 - 💾 **Flexible Storage** - SQLite (default, no setup) or PostgreSQL
 - 🎨 **Clean UI** - React-based dashboard to view and analyze traces
 - 🐳 **Docker Ready** - Single container with embedded frontend
 - ⚡ **Fast & Lightweight** - Go backend with minimal dependencies
 - 📦 **No External Dependencies** - Frontend embedded in Go binary
+- 📝 **Structured Logging** - Configurable log levels with verbose output
 
 ## Quick Start
 
@@ -107,6 +109,9 @@ Configuration is done via environment variables:
 | `DB_TYPE` | `sqlite` | Database type (`sqlite` or `postgres`) |
 | `DB_CONNECTION` | `/data/traces.db` | Database connection string |
 | `PORT` | `8080` | Server port |
+| `LOG_LEVEL` | `INFO` | Log level (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
+| `OTLP_ENABLED` | `true` | Enable OpenTelemetry OTLP receiver |
+| `OTLP_ENDPOINT` | `:4318` | OTLP endpoint (documentation only) |
 
 ### SQLite (Default)
 
@@ -123,6 +128,62 @@ export DB_CONNECTION=postgres://username:password@localhost:5432/traces?sslmode=
 ```
 
 See `.env.example` for more configuration options.
+
+## OpenTelemetry Integration
+
+Simple Traces now supports receiving traces via the OpenTelemetry Protocol (OTLP).
+
+### OTLP HTTP Endpoint
+
+```
+POST http://localhost:8080/v1/traces
+Content-Type: application/x-protobuf
+```
+
+### Supported Attributes
+
+The backend automatically maps OpenTelemetry span attributes to trace fields:
+
+**LLM Conventions:**
+- `llm.model` → Model name
+- `llm.input` → Input prompt
+- `llm.output` → Model output
+- `llm.usage.prompt_tokens` → Prompt token count
+- `llm.usage.completion_tokens` → Completion token count
+
+**Gen AI Semantic Conventions:**
+- `gen_ai.request.model` → Model name
+- `gen_ai.prompt` → Input prompt
+- `gen_ai.response` → Model output
+- `gen_ai.usage.input_tokens` → Input token count
+- `gen_ai.usage.output_tokens` → Output token count
+
+All span attributes, events, and metadata are preserved in the trace metadata field.
+
+### Example Usage
+
+See the `examples/otel-client.js` file for a complete OpenTelemetry integration example.
+
+```bash
+cd examples
+npm install
+npm run otel
+```
+
+### Logging Configuration
+
+Set the `LOG_LEVEL` environment variable to control logging verbosity:
+
+- `DEBUG` - Verbose logging including request details and span processing
+- `INFO` - Standard operational logs (default)
+- `WARN` - Warning messages only
+- `ERROR` - Error messages only
+
+Example:
+```bash
+export LOG_LEVEL=DEBUG
+./simple-traces
+```
 
 ## Development
 
