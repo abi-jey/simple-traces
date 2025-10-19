@@ -5,7 +5,7 @@ A lightweight LLM tracing tool with support for SQLite (no DB requirement) or Po
 ## Features
 
 - 🚀 **Simple API** - REST endpoint to collect LLM traces
-- 📡 **OpenTelemetry Support** - Native OTLP receiver for trace collection
+- 📡 **OpenTelemetry Collector** - OTLP HTTP endpoint to receive traces from instrumented applications
 - 💾 **Flexible Storage** - SQLite (default, no setup) or PostgreSQL
 - 🎨 **Clean UI** - React-based dashboard to view and analyze traces
 - 🐳 **Docker Ready** - Single container with embedded frontend
@@ -143,13 +143,47 @@ See `.env.example` for more configuration options.
 
 ## OpenTelemetry Integration
 
-Simple Traces now supports receiving traces via the OpenTelemetry Protocol (OTLP).
+Simple Traces acts as an **OpenTelemetry Collector** that receives traces via the OpenTelemetry Protocol (OTLP). You can instrument your applications (Python, JavaScript, Java, etc.) with OpenTelemetry and configure them to export traces to Simple Traces.
 
 ### OTLP HTTP Endpoint
 
 ```
 POST http://localhost:8080/v1/traces
 Content-Type: application/x-protobuf
+```
+
+### Python Example
+
+Here's how to send traces from a Python application:
+
+```python
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+
+# Configure the tracer
+resource = Resource.create({"service.name": "my-python-app"})
+trace.set_tracer_provider(TracerProvider(resource=resource))
+
+# Configure OTLP exporter to send to Simple Traces
+otlp_exporter = OTLPSpanExporter(
+    endpoint="http://localhost:8080/v1/traces",
+)
+
+# Add the exporter
+span_processor = BatchSpanProcessor(otlp_exporter)
+trace.get_tracer_provider().add_span_processor(span_processor)
+
+# Create traces
+tracer = trace.get_tracer(__name__)
+with tracer.start_as_current_span("llm-request") as span:
+    span.set_attribute("llm.model", "gpt-4")
+    span.set_attribute("llm.input", "What is the meaning of life?")
+    span.set_attribute("llm.output", "42")
+    span.set_attribute("llm.usage.prompt_tokens", 10)
+    span.set_attribute("llm.usage.completion_tokens", 5)
 ```
 
 ### Supported Attributes
@@ -172,9 +206,44 @@ The backend automatically maps OpenTelemetry span attributes to trace fields:
 
 All span attributes, events, and metadata are preserved in the trace metadata field.
 
+### JavaScript/Node.js Example
+
+```javascript
+const { NodeTracerProvider } = require('@opentelemetry/sdk-trace-node');
+const { OTLPTraceExporter } = require('@opentelemetry/exporter-trace-otlp-http');
+const { BatchSpanProcessor } = require('@opentelemetry/sdk-trace-base');
+const { Resource } = require('@opentelemetry/resources');
+const { trace } = require('@opentelemetry/api');
+
+// Configure the tracer
+const provider = new NodeTracerProvider({
+  resource: new Resource({
+    'service.name': 'my-node-app',
+  }),
+});
+
+// Configure OTLP exporter to send to Simple Traces
+const exporter = new OTLPTraceExporter({
+  url: 'http://localhost:8080/v1/traces',
+});
+
+provider.addSpanProcessor(new BatchSpanProcessor(exporter));
+provider.register();
+
+// Create traces
+const tracer = trace.getTracer('my-app');
+const span = tracer.startSpan('llm-request');
+span.setAttribute('llm.model', 'gpt-4');
+span.setAttribute('llm.input', 'What is AI?');
+span.setAttribute('llm.output', 'Artificial Intelligence...');
+span.setAttribute('llm.usage.prompt_tokens', 8);
+span.setAttribute('llm.usage.completion_tokens', 25);
+span.end();
+```
+
 ### Example Usage
 
-See the `examples/otel-client.js` file for a complete OpenTelemetry integration example.
+See the `examples/otel-client.js` file for a complete OpenTelemetry integration example (if available in the repository).
 
 ```bash
 cd examples
