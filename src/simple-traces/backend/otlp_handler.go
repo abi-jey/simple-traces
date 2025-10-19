@@ -18,15 +18,15 @@ import (
 
 // OTLPHandler handles OTLP trace data via HTTP
 type OTLPHandler struct {
-	processor *CustomSpanProcessor
-	logger    *Logger
+	db     Database
+	logger *Logger
 }
 
 // NewOTLPHandler creates a new OTLP handler
 func NewOTLPHandler(db Database, logger *Logger) *OTLPHandler {
 	return &OTLPHandler{
-		processor: NewCustomSpanProcessor(db, logger),
-		logger:    logger,
+		db:     db,
+		logger: logger,
 	}
 }
 
@@ -213,7 +213,7 @@ func (h *OTLPHandler) processSpan(span *tracepbv1.Span, resource *resourcepb.Res
 	}
 
 	// Store in database
-	id, err := h.processor.db.CreateTrace(traceEntry)
+	id, err := h.db.CreateTrace(traceEntry)
 	if err != nil {
 		h.logger.Error("Failed to store trace from OTLP span: %v", err)
 		return
@@ -276,5 +276,33 @@ func convertOTLPAttribute(attr *commonpb.KeyValue) attribute.KeyValue {
 	default:
 		// Log warning for truly unknown types
 		return key.String(fmt.Sprintf("<unsupported type: %T>", v))
+	}
+}
+
+// attrValueToInterface converts an attribute.Value to a Go interface{}
+// It handles all OpenTelemetry attribute types including:
+// - Primitive types (bool, int64, float64, string)
+// - Slice types ([]bool, []int64, []float64, []string)
+// For unsupported types, it falls back to string conversion using AsString()
+func attrValueToInterface(v attribute.Value) interface{} {
+	switch v.Type() {
+	case attribute.BOOL:
+		return v.AsBool()
+	case attribute.INT64:
+		return v.AsInt64()
+	case attribute.FLOAT64:
+		return v.AsFloat64()
+	case attribute.STRING:
+		return v.AsString()
+	case attribute.BOOLSLICE:
+		return v.AsBoolSlice()
+	case attribute.INT64SLICE:
+		return v.AsInt64Slice()
+	case attribute.FLOAT64SLICE:
+		return v.AsFloat64Slice()
+	case attribute.STRINGSLICE:
+		return v.AsStringSlice()
+	default:
+		return v.AsString()
 	}
 }

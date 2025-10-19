@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -39,21 +38,11 @@ func Run() error {
 	defer db.Close()
 	logger.Info("Database initialized successfully (type: %s)", config.DBType)
 
-	// Initialize OpenTelemetry if enabled
+	// Log OTLP collector status
 	if config.OTLPEnabled {
-		tp, err := setupTracerProvider(config, db, logger)
-		if err != nil {
-			logger.Error("Failed to initialize OpenTelemetry tracer provider: %v", err)
-			return fmt.Errorf("setup otel: %w", err)
-		}
-		defer func() {
-			if err := tp.Shutdown(context.Background()); err != nil {
-				logger.Error("Error shutting down tracer provider: %v", err)
-			}
-		}()
-		logger.Info("OpenTelemetry integration enabled")
+		logger.Info("OpenTelemetry OTLP collector enabled")
 	} else {
-		logger.Info("OpenTelemetry integration disabled")
+		logger.Info("OpenTelemetry OTLP collector disabled")
 	}
 
 	router := mux.NewRouter()
