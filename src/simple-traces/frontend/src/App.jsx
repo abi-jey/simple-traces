@@ -71,6 +71,12 @@ function App() {
       setProject(name)
       localStorage.setItem('st-project-id', pid)
       localStorage.setItem('st-project', name)
+      // ensure it appears in recent projects
+      if (!found) {
+        const next = [...list, { id: pid, name }]
+        localStorage.setItem('st-projects', JSON.stringify(next))
+        setProjects(next)
+      }
     }
     const route = parseRoute(window.location.pathname)
     const savedName = localStorage.getItem('st-project')
@@ -116,6 +122,7 @@ function App() {
       if (r.route === 'projects') {
         setView('projects')
       } else if (r.route === 'project') {
+        // apply and refresh
         const list = JSON.parse(localStorage.getItem('st-projects') || '[]')
         const found = list.find((p) => p.id === r.id)
         const name = found ? found.name : r.id
@@ -123,6 +130,11 @@ function App() {
         setProject(name)
         localStorage.setItem('st-project-id', r.id)
         localStorage.setItem('st-project', name)
+        if (!found) {
+          const next = [...list, { id: r.id, name }]
+          localStorage.setItem('st-projects', JSON.stringify(next))
+          setProjects(next)
+        }
         setView('main')
         // refresh data for the new route project
         setGroups([]); setGroupsBefore(null); setHasMoreGroups(true); setGroupsLoading(true)
@@ -143,9 +155,9 @@ function App() {
   }, [])
 
   const fetchGroups = async (refresh = false) => {
-    return (
+    try {
       let url = '/api/conversations?limit=100'
-        <h2>Recent Projects</h2>
+      if (!refresh && groupsBefore) {
         url += `&before=${encodeURIComponent(groupsBefore)}`
       }
       if (search.trim()) {
@@ -153,11 +165,7 @@ function App() {
       }
       const res = await fetch(url)
       if (!res.ok) throw new Error('Failed to fetch conversations')
-          {projects.length === 0 && (
-            <div style={{ color: 'var(--muted)' }}>
-              No recent projects. Open a URL like <code>/projects/project-1</code> to view a project.
-            </div>
-          )}
+      const convs = await res.json()
       // Map conversations to existing UI shape (trace_id -> conversation id)
       const data = Array.isArray(convs)
         ? convs.map((c) => ({
@@ -330,7 +338,7 @@ function App() {
     }
     return (
       <div className="projects-page">
-        <h2>Select a Project</h2>
+        <h2>Recent Projects</h2>
         <div className="projects-grid">
           {projects.map((p) => (
             <div key={p.id} className="project-card" onClick={() => choose(p)}>
@@ -338,6 +346,11 @@ function App() {
               <div className="project-name">{p.name}</div>
             </div>
           ))}
+          {projects.length === 0 && (
+            <div style={{ color: 'var(--muted)' }}>
+              No recent projects. Open a URL like <code>/projects/project-1</code> to view a project.
+            </div>
+          )}
         </div>
       </div>
     )
