@@ -45,26 +45,38 @@ docker run -d -p 8080:8080 --name simple-traces simple-traces
 - Go 1.21 or higher
 - Node.js 18 or higher
 
-#### Backend Setup
+#### Build from Root
+
+The repository now supports building from the root directory:
 
 ```bash
-cd backend
-go mod download
-go build -o simple-traces
+# Install frontend dependencies
+npm run install-frontend
+
+# Build frontend
+npm run build
+
+# Build backend
+npm run build-backend
+
+# Or build everything at once
+npm run build-all
+
+# Run the application
 ./simple-traces
 ```
 
-#### Frontend Setup
+#### Development
 
-```bash
-cd frontend
-npm install
-npm run build
-```
-
-For development:
+For frontend development:
 ```bash
 npm run dev  # Runs on http://localhost:5173
+```
+
+For backend development:
+```bash
+cd src/simple-traces/backend
+go run .
 ```
 
 ## API Usage
@@ -190,14 +202,13 @@ export LOG_LEVEL=DEBUG
 ### Backend
 
 ```bash
-cd backend
+cd src/simple-traces/backend
 go run .
 ```
 
 ### Frontend
 
 ```bash
-cd frontend
 npm run dev
 ```
 
@@ -249,16 +260,20 @@ docker rm simple-traces
 
 ```
 simple-traces/
-├── backend/           # Go backend
-│   ├── main.go       # Main server code
-│   ├── database.go   # Database abstraction layer
-│   ├── static.go     # Embedded frontend files handler
-│   └── go.mod        # Go dependencies
-├── frontend/          # React frontend
-│   ├── src/          # Source files
-│   ├── public/       # Static assets
-│   └── package.json  # Node dependencies
-├── Dockerfile         # Multi-stage Docker build
+├── src/
+│   └── simple-traces/
+│       ├── backend/           # Go backend
+│       │   ├── main.go       # Main server code
+│       │   ├── database.go   # Database abstraction layer
+│       │   ├── static.go     # Embedded frontend files handler
+│       │   └── otel*.go      # OpenTelemetry integration
+│       └── frontend/          # React frontend
+│           ├── src/          # Source files
+│           └── package.json  # Frontend dependencies
+├── examples/          # Example clients
+├── go.mod            # Go dependencies (root)
+├── package.json      # NPM scripts (root)
+├── Dockerfile        # Multi-stage Docker build
 └── README.md         # This file
 ```
 
