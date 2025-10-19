@@ -1,4 +1,4 @@
-package main
+package backend
 
 import (
 	"encoding/json"
@@ -33,13 +33,13 @@ func NewOTLPHandler(db Database, logger *Logger) *OTLPHandler {
 // ServeHTTP handles OTLP HTTP requests
 func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.logger.Debug("Received OTLP request: %s %s", r.Method, r.URL.Path)
-	
+
 	if r.Method != http.MethodPost {
 		h.logger.Warn("Invalid OTLP request method: %s", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -48,9 +48,9 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer r.Body.Close()
-	
+
 	h.logger.Debug("Received OTLP payload of %d bytes", len(body))
-	
+
 	// Parse OTLP trace request
 	var req tracepb.ExportTraceServiceRequest
 	if err := proto.Unmarshal(body, &req); err != nil {
@@ -58,9 +58,9 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to parse OTLP request", http.StatusBadRequest)
 		return
 	}
-	
+
 	h.logger.Info("Processing OTLP trace export with %d resource spans", len(req.ResourceSpans))
-	
+
 	// Process each resource span
 	spansProcessed := 0
 	for _, rs := range req.ResourceSpans {
@@ -71,9 +71,9 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	
+
 	h.logger.Info("Successfully processed %d spans from OTLP export", spansProcessed)
-	
+
 	// Send success response
 	resp := &tracepb.ExportTraceServiceResponse{}
 	respBytes, err := proto.Marshal(resp)
@@ -82,7 +82,7 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to create response", http.StatusInternalServerError)
 		return
 	}
-	
+
 	w.Header().Set("Content-Type", "application/x-protobuf")
 	w.WriteHeader(http.StatusOK)
 	w.Write(respBytes)
@@ -91,14 +91,14 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // processSpan converts and stores an OTLP span directly
 func (h *OTLPHandler) processSpan(span *tracepbv1.Span, resource *resourcepb.Resource) {
 	h.logger.Debug("Processing OTLP span: %s", span.Name)
-	
+
 	// Extract attributes into a map
 	attrs := make(map[string]interface{})
 	for _, attr := range span.Attributes {
 		kv := convertOTLPAttribute(attr)
 		attrs[string(kv.Key)] = attrValueToInterface(kv.Value)
 	}
-	
+
 	// Also add resource attributes
 	if resource != nil {
 		for _, attr := range resource.Attributes {
@@ -106,14 +106,14 @@ func (h *OTLPHandler) processSpan(span *tracepbv1.Span, resource *resourcepb.Res
 			attrs["resource."+string(kv.Key)] = attrValueToInterface(kv.Value)
 		}
 	}
-	
+
 	// Extract model information from attributes (if available)
 	model := "unknown"
 	input := ""
 	output := ""
 	promptTokens := 0
 	outputTokens := 0
-	
+
 	// Check for common LLM-related attributes
 	if modelAttr, ok := attrs["llm.model"]; ok {
 		model = fmt.Sprintf("%v", modelAttr)
@@ -122,19 +122,19 @@ func (h *OTLPHandler) processSpan(span *tracepbv1.Span, resource *resourcepb.Res
 	} else if modelAttr, ok := attrs["resource.service.name"]; ok {
 		model = fmt.Sprintf("%v", modelAttr)
 	}
-	
+
 	if inputAttr, ok := attrs["llm.input"]; ok {
 		input = fmt.Sprintf("%v", inputAttr)
 	} else if inputAttr, ok := attrs["gen_ai.prompt"]; ok {
 		input = fmt.Sprintf("%v", inputAttr)
 	}
-	
+
 	if outputAttr, ok := attrs["llm.output"]; ok {
 		output = fmt.Sprintf("%v", outputAttr)
 	} else if outputAttr, ok := attrs["gen_ai.response"]; ok {
 		output = fmt.Sprintf("%v", outputAttr)
 	}
-	
+
 	if promptTokensAttr, ok := attrs["llm.usage.prompt_tokens"]; ok {
 		if val, ok := promptTokensAttr.(int64); ok {
 			promptTokens = int(val)
@@ -144,7 +144,7 @@ func (h *OTLPHandler) processSpan(span *tracepbv1.Span, resource *resourcepb.Res
 			promptTokens = int(val)
 		}
 	}
-	
+
 	if outputTokensAttr, ok := attrs["llm.usage.completion_tokens"]; ok {
 		if val, ok := outputTokensAttr.(int64); ok {
 			outputTokens = int(val)
@@ -154,25 +154,25 @@ func (h *OTLPHandler) processSpan(span *tracepbv1.Span, resource *resourcepb.Res
 			outputTokens = int(val)
 		}
 	}
-	
+
 	// Calculate duration in milliseconds
 	startTime := time.Unix(0, int64(span.StartTimeUnixNano))
 	endTime := time.Unix(0, int64(span.EndTimeUnixNano))
 	duration := endTime.Sub(startTime).Milliseconds()
-	
+
 	// Add span metadata
 	attrs["span.name"] = span.Name
 	attrs["span.kind"] = spanKindToString(span.Kind)
 	attrs["trace.id"] = fmt.Sprintf("%x", span.TraceId)
 	attrs["span.id"] = fmt.Sprintf("%x", span.SpanId)
-	
+
 	if span.Status != nil {
 		attrs["span.status.code"] = statusCodeToString(span.Status.Code)
 		if span.Status.Message != "" {
 			attrs["span.status.description"] = span.Status.Message
 		}
 	}
-	
+
 	// Add events to metadata if any
 	if len(span.Events) > 0 {
 		events := make([]map[string]interface{}, 0, len(span.Events))
@@ -193,13 +193,13 @@ func (h *OTLPHandler) processSpan(span *tracepbv1.Span, resource *resourcepb.Res
 		}
 		attrs["span.events"] = events
 	}
-	
+
 	metadataJSON, err := json.Marshal(attrs)
 	if err != nil {
 		h.logger.Error("Failed to marshal span attributes: %v", err)
 		return
 	}
-	
+
 	// Create trace entry
 	traceEntry := Trace{
 		Model:        model,
@@ -211,14 +211,14 @@ func (h *OTLPHandler) processSpan(span *tracepbv1.Span, resource *resourcepb.Res
 		Metadata:     string(metadataJSON),
 		Timestamp:    startTime,
 	}
-	
+
 	// Store in database
 	id, err := h.processor.db.CreateTrace(traceEntry)
 	if err != nil {
 		h.logger.Error("Failed to store trace from OTLP span: %v", err)
 		return
 	}
-	
+
 	h.logger.Info("Stored trace from OTLP span: %s (Model: %s, Duration: %dms, Tokens: %d/%d)",
 		id, model, duration, promptTokens, outputTokens)
 }
@@ -254,7 +254,7 @@ func statusCodeToString(code tracepbv1.Status_StatusCode) string {
 // convertOTLPAttribute converts an OTLP attribute to an OpenTelemetry attribute
 func convertOTLPAttribute(attr *commonpb.KeyValue) attribute.KeyValue {
 	key := attribute.Key(attr.Key)
-	
+
 	switch v := attr.Value.Value.(type) {
 	case *commonpb.AnyValue_StringValue:
 		return key.String(v.StringValue)
@@ -278,5 +278,3 @@ func convertOTLPAttribute(attr *commonpb.KeyValue) attribute.KeyValue {
 		return key.String(fmt.Sprintf("<unsupported type: %T>", v))
 	}
 }
-
-

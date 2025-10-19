@@ -7,7 +7,7 @@ export default defineConfig({
   root: 'src/simple-traces/frontend',
   publicDir: 'src/simple-traces/frontend/public',
   build: {
-    outDir: '../../../dist', // places dist at repository root
+    outDir: '../backend/frontend/dist', // output directly to backend embed path
     emptyOutDir: true,
   },
   server: {

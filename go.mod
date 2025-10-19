@@ -1,8 +1,6 @@
 module github.com/abi-jey/simple-traces
 
-go 1.23.0
-
-toolchain go1.24.9
+go 1.25.3
 
 require (
 	github.com/gorilla/mux v1.8.1

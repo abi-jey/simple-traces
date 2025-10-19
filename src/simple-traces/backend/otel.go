@@ -1,4 +1,4 @@
-package main
+package backend
 
 import (
 	"context"
@@ -35,42 +35,42 @@ func (p *CustomSpanProcessor) OnStart(parent context.Context, s sdktrace.ReadWri
 func (p *CustomSpanProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 	// Convert OpenTelemetry span to our trace format
 	spanCtx := s.SpanContext()
-	
+
 	p.logger.Debug("Span ended: %s (TraceID: %s, SpanID: %s, Duration: %v)",
 		s.Name(), spanCtx.TraceID().String(), spanCtx.SpanID().String(), s.EndTime().Sub(s.StartTime()))
-	
+
 	// Extract attributes
 	attrs := make(map[string]interface{})
 	for _, attr := range s.Attributes() {
 		attrs[string(attr.Key)] = attrValueToInterface(attr.Value)
 	}
-	
+
 	// Extract model information from attributes (if available)
 	model := "unknown"
 	input := ""
 	output := ""
 	promptTokens := 0
 	outputTokens := 0
-	
+
 	// Check for common LLM-related attributes
 	if modelAttr, ok := attrs["llm.model"]; ok {
 		model = fmt.Sprintf("%v", modelAttr)
 	} else if modelAttr, ok := attrs["gen_ai.request.model"]; ok {
 		model = fmt.Sprintf("%v", modelAttr)
 	}
-	
+
 	if inputAttr, ok := attrs["llm.input"]; ok {
 		input = fmt.Sprintf("%v", inputAttr)
 	} else if inputAttr, ok := attrs["gen_ai.prompt"]; ok {
 		input = fmt.Sprintf("%v", inputAttr)
 	}
-	
+
 	if outputAttr, ok := attrs["llm.output"]; ok {
 		output = fmt.Sprintf("%v", outputAttr)
 	} else if outputAttr, ok := attrs["gen_ai.response"]; ok {
 		output = fmt.Sprintf("%v", outputAttr)
 	}
-	
+
 	if promptTokensAttr, ok := attrs["llm.usage.prompt_tokens"]; ok {
 		if val, ok := promptTokensAttr.(int64); ok {
 			promptTokens = int(val)
@@ -80,7 +80,7 @@ func (p *CustomSpanProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 			promptTokens = int(val)
 		}
 	}
-	
+
 	if outputTokensAttr, ok := attrs["llm.usage.completion_tokens"]; ok {
 		if val, ok := outputTokensAttr.(int64); ok {
 			outputTokens = int(val)
@@ -90,23 +90,23 @@ func (p *CustomSpanProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 			outputTokens = int(val)
 		}
 	}
-	
+
 	// Calculate duration in milliseconds
 	duration := s.EndTime().Sub(s.StartTime()).Milliseconds()
-	
+
 	// Add span name and status to metadata
 	attrs["span.name"] = s.Name()
 	attrs["span.kind"] = s.SpanKind().String()
 	attrs["trace.id"] = spanCtx.TraceID().String()
 	attrs["span.id"] = spanCtx.SpanID().String()
-	
+
 	if s.Status().Code != codes.Unset {
 		attrs["span.status.code"] = s.Status().Code.String()
 		if s.Status().Description != "" {
 			attrs["span.status.description"] = s.Status().Description
 		}
 	}
-	
+
 	// Add events to metadata if any
 	if len(s.Events()) > 0 {
 		events := make([]map[string]interface{}, 0, len(s.Events()))
@@ -126,13 +126,13 @@ func (p *CustomSpanProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 		}
 		attrs["span.events"] = events
 	}
-	
+
 	metadataJSON, err := json.Marshal(attrs)
 	if err != nil {
 		p.logger.Error("Failed to marshal span attributes: %v", err)
 		return
 	}
-	
+
 	// Create trace entry
 	traceEntry := Trace{
 		Model:        model,
@@ -144,14 +144,14 @@ func (p *CustomSpanProcessor) OnEnd(s sdktrace.ReadOnlySpan) {
 		Metadata:     string(metadataJSON),
 		Timestamp:    s.StartTime(),
 	}
-	
+
 	// Store in database
 	id, err := p.db.CreateTrace(traceEntry)
 	if err != nil {
 		p.logger.Error("Failed to store trace from span: %v", err)
 		return
 	}
-	
+
 	p.logger.Info("Stored trace from OpenTelemetry span: %s (Model: %s, Duration: %dms, Tokens: %d/%d)",
 		id, model, duration, promptTokens, outputTokens)
 }
@@ -195,15 +195,15 @@ func attrValueToInterface(v attribute.Value) interface{} {
 // setupTracerProvider sets up the OpenTelemetry tracer provider with OTLP exporters
 func setupTracerProvider(config Config, db Database, logger *Logger) (*sdktrace.TracerProvider, error) {
 	logger.Info("Setting up OpenTelemetry tracer provider")
-	
+
 	// Create custom span processor
 	processor := NewCustomSpanProcessor(db, logger)
-	
+
 	// Create tracer provider
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithSpanProcessor(processor),
 	)
-	
+
 	logger.Info("OpenTelemetry tracer provider initialized successfully")
 	return tp, nil
 }

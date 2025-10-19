@@ -1,9 +1,13 @@
-package main
+package backend
 
 import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"os"
+	"path/filepath"
+	"strings"
 
 	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-sqlite3"
@@ -48,6 +52,29 @@ func initDB(config Config) (Database, error) {
 }
 
 func initSQLite(dbPath string) (*SQLiteDB, error) {
+	// Ensure parent directory exists when using a file path (not :memory: etc.)
+	if dbPath != ":memory:" && dbPath != "file::memory:?cache=shared" {
+		// For SQLite DSNs like file:foo.db?cache=shared, extract the path part best-effort
+		cleaned := dbPath
+		if strings.HasPrefix(cleaned, "file:") {
+			// strip file: and parameters after '?'
+			cleaned = strings.TrimPrefix(cleaned, "file:")
+			if idx := strings.Index(cleaned, "?"); idx != -1 {
+				cleaned = cleaned[:idx]
+			}
+		} else {
+			// For regular paths, also strip URI parameters if any
+			if idx := strings.Index(cleaned, "?"); idx != -1 {
+				cleaned = cleaned[:idx]
+			}
+		}
+		dir := filepath.Dir(cleaned)
+		if dir != "." && dir != "" {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return nil, fmt.Errorf("create db dir: %w", err)
+			}
+		}
+	}
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, err

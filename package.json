@@ -8,10 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "install-frontend": "npm install",
-    "build-backend": "mkdir -p src/simple-traces/backend/frontend && cp -r dist src/simple-traces/backend/frontend/dist && cd src/simple-traces/backend && go build -o ../../../simple-traces .",
-    "build-all": "npm run install-frontend && npm run build && npm run build-backend",
-    "clean": "rm -rf src/simple-traces/backend/frontend dist node_modules simple-traces"
+    "clean": "rm -rf src/simple-traces/backend/frontend/dist node_modules simple-traces"
   },
   "keywords": ["tracing", "llm", "opentelemetry", "go", "react"],
   "author": "",

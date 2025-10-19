@@ -11,28 +11,32 @@ COPY vite.config.js ./
 COPY src/simple-traces/frontend ./src/simple-traces/frontend
 
 # Install and build
-RUN npm ci && npm run build
+RUN npm install && mkdir -p src/simple-traces/backend/frontend && npm run build
 
 ########## Stage 2: Build Go backend with embedded frontend ##########
-FROM golang:1.21-alpine AS go-builder
+FROM golang:1.25-alpine AS go-builder
 
 WORKDIR /app
 
 # Install build dependencies for CGO
 RUN apk add --no-cache gcc musl-dev
 
+# Ensure Go can auto-download the exact toolchain version specified in go.mod if needed
+ENV GOTOOLCHAIN=auto
+
 # Copy root Go module files and download dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy backend source code
-COPY src/simple-traces/backend/*.go ./src/simple-traces/backend/
+# Copy entire repository (keeping module path intact for embedding and cmd build)
+COPY . .
 
-# Copy the built frontend from frontend-builder stage to the expected embed path
-COPY --from=frontend-builder /app/dist ./src/simple-traces/backend/frontend/dist
+# Ensure the built frontend from the frontend-builder stage is present at the embed path inside the repo before building
+RUN mkdir -p src/simple-traces/backend/frontend/dist
+COPY --from=frontend-builder /app/src/simple-traces/backend/frontend/dist/ ./src/simple-traces/backend/frontend/dist/
 
-# Build the application with CGO enabled for SQLite
-RUN cd src/simple-traces/backend && CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /app/simple-traces .
+# Build the application with CGO enabled for SQLite from the repo root
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o /app/simple-traces .
 
 ########## Stage 3: Final runtime image ##########
 FROM alpine:latest
