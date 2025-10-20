@@ -8,30 +8,20 @@
 
 .header {
   background: var(--header-bg);
-  backdrop-filter: blur(12px);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
   color: var(--header-text);
   padding: 1.25rem 2rem;
   text-align: center;
-  box-shadow: 0 8px 32px -8px var(--header-shadow-color);
+  box-shadow: none;
   border-bottom: none;
   position: relative;
   transition: all 0.3s ease;
 }
 
-/* Blur/shadow fade effect - creates depth with soft shadow */
+/* Glassmorphism - no fade, just transparent glass effect */
 .header::after {
-  content: '';
-  position: absolute;
-  bottom: -20px;
-  left: 5%;
-  right: 5%;
-  height: 20px;
-  background: transparent;
-  box-shadow: 0 10px 40px -5px var(--header-shadow-color);
-  filter: blur(15px);
-  pointer-events: none;
-  z-index: 1;
-  border-radius: 50%;
+  content: none;
 }
 
 .header h1 {
@@ -65,11 +55,11 @@
   --error: #ef4444;
   
   /* Header specific */
-  --header-bg: linear-gradient(135deg, rgba(99, 102, 241, 0.95) 0%, rgba(168, 85, 247, 0.95) 100%);
-  --header-text: #ffffff;
+  --header-bg: rgba(255, 255, 255, 0.7);
+  --header-text: #09090b;
   --header-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
   --header-border: rgba(255, 255, 255, 0.1);
-  --title-gradient: linear-gradient(135deg, #ffffff 0%, #f0f0ff 100%);
+  --title-gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
   --header-fade-start: rgba(99, 102, 241, 0.3);
   --header-shadow-color: rgba(99, 102, 241, 0.25);
   
@@ -106,7 +96,7 @@
   --error: #f87171;
   
   /* Header specific */
-  --header-bg: linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(168, 85, 247, 0.15) 100%);
+  --header-bg: rgba(24, 24, 27, 0.6);
   --header-text: #fafafa;
   --header-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
   --header-border: rgba(255, 255, 255, 0.05);
