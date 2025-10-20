@@ -14,21 +14,49 @@
   padding: 1.25rem 2rem;
   text-align: center;
   box-shadow: none;
-  border-bottom: 1px solid var(--header-separator);
+  border-bottom: none;
   position: relative;
+  overflow: hidden;
   transition: all 0.3s ease;
 }
 
-/* Minimal - subtle separator line that fades to transparent */
+/* Animated gradient wave effect */
+.header::before {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: -50%;
+  right: -50%;
+  height: 4px;
+  background: linear-gradient(90deg, 
+    transparent 0%, 
+    var(--primary) 25%, 
+    var(--accent) 50%, 
+    var(--primary) 75%, 
+    transparent 100%);
+  animation: waveSlide 8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes waveSlide {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(25%);
+  }
+}
+
 .header::after {
   content: '';
   position: absolute;
-  bottom: -1px;
-  left: 10%;
-  right: 10%;
-  height: 1px;
-  background: linear-gradient(to right, transparent, var(--header-separator-accent), transparent);
+  bottom: -25px;
+  left: 0;
+  right: 0;
+  height: 25px;
+  background: radial-gradient(ellipse at center top, var(--header-fade-glow) 0%, transparent 70%);
   pointer-events: none;
+  opacity: 0.4;
 }
 
 .header h1 {
@@ -71,6 +99,7 @@
   --header-shadow-color: rgba(99, 102, 241, 0.25);
   --header-separator: rgba(99, 102, 241, 0.1);
   --header-separator-accent: rgba(99, 102, 241, 0.3);
+  --header-fade-glow: rgba(99, 102, 241, 0.15);
   
   /* Glow colors for connection status - light mode uses brighter, more visible glows */
   --glow-color-connected: rgba(255, 255, 255, 0.9);
@@ -114,6 +143,7 @@
   --header-shadow-color: rgba(99, 102, 241, 0.2);
   --header-separator: rgba(99, 102, 241, 0.15);
   --header-separator-accent: rgba(99, 102, 241, 0.4);
+  --header-fade-glow: rgba(99, 102, 241, 0.12);
   
   /* Glow colors for connection status - dark mode uses the actual status colors */
   --glow-color-connected: rgba(52, 211, 153, 0.6);
