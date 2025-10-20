@@ -8,20 +8,27 @@
 
 .header {
   background: var(--header-bg);
-  backdrop-filter: blur(20px) saturate(180%);
-  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   color: var(--header-text);
   padding: 1.25rem 2rem;
   text-align: center;
   box-shadow: none;
-  border-bottom: none;
+  border-bottom: 1px solid var(--header-separator);
   position: relative;
   transition: all 0.3s ease;
 }
 
-/* Glassmorphism - no fade, just transparent glass effect */
+/* Minimal - subtle separator line that fades to transparent */
 .header::after {
-  content: none;
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 10%;
+  right: 10%;
+  height: 1px;
+  background: linear-gradient(to right, transparent, var(--header-separator-accent), transparent);
+  pointer-events: none;
 }
 
 .header h1 {
@@ -55,13 +62,15 @@
   --error: #ef4444;
   
   /* Header specific */
-  --header-bg: rgba(255, 255, 255, 0.7);
-  --header-text: #09090b;
+  --header-bg: var(--bg);
+  --header-text: var(--text);
   --header-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
   --header-border: rgba(255, 255, 255, 0.1);
   --title-gradient: linear-gradient(135deg, #6366f1 0%, #a855f7 100%);
   --header-fade-start: rgba(99, 102, 241, 0.3);
   --header-shadow-color: rgba(99, 102, 241, 0.25);
+  --header-separator: rgba(99, 102, 241, 0.1);
+  --header-separator-accent: rgba(99, 102, 241, 0.3);
   
   /* Glow colors for connection status - light mode uses brighter, more visible glows */
   --glow-color-connected: rgba(255, 255, 255, 0.9);
@@ -96,13 +105,15 @@
   --error: #f87171;
   
   /* Header specific */
-  --header-bg: rgba(24, 24, 27, 0.6);
-  --header-text: #fafafa;
+  --header-bg: var(--bg);
+  --header-text: var(--text);
   --header-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
   --header-border: rgba(255, 255, 255, 0.05);
   --title-gradient: linear-gradient(135deg, #fafafa 0%, #a5b4fc 100%);
   --header-fade-start: rgba(99, 102, 241, 0.08);
   --header-shadow-color: rgba(99, 102, 241, 0.2);
+  --header-separator: rgba(99, 102, 241, 0.15);
+  --header-separator-accent: rgba(99, 102, 241, 0.4);
   
   /* Glow colors for connection status - dark mode uses the actual status colors */
   --glow-color-connected: rgba(52, 211, 153, 0.6);
