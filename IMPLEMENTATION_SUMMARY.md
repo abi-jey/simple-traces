@@ -40,25 +40,35 @@ Improve the header of the Simple Traces web app to fade seamlessly into the rest
 
 ## Version Breakdown
 
-### Version 1: Gradient Fade (Commit: 6e5b567)
+Each version is now available in its own dedicated branch for easy testing:
+
+### Version 1: Gradient Fade
+- **Branch**: `header-v1-gradient-fade`
+- **Commit**: `6e5b567`
 - **Approach**: CSS gradient overlay extending below header
 - **Effect**: Smooth color transition from header to page
 - **Best For**: Maintaining brand colors while softening appearance
 - **Implementation**: `::after` pseudo-element with linear-gradient
 
-### Version 2: Blur/Shadow Fade (Commit: 1c8918e)
+### Version 2: Blur/Shadow Fade
+- **Branch**: `header-v2-blur-shadow`
+- **Commit**: `1c8918e`
 - **Approach**: Soft, blurred shadow beneath header
 - **Effect**: Creates depth and floating appearance
 - **Best For**: Adding dimension and visual hierarchy
 - **Implementation**: `::after` with box-shadow and blur filter
 
-### Version 3: Glassmorphism (Commit: e319f83)
+### Version 3: Glassmorphism
+- **Branch**: `header-v3-glassmorphism`
+- **Commit**: `e319f83`
 - **Approach**: Transparent header with backdrop blur
 - **Effect**: Modern glass-like appearance
 - **Best For**: Contemporary, minimal design
 - **Implementation**: Semi-transparent background with backdrop-filter
 
-### Version 4: Minimal Separator (Commit: fc93a68) - CURRENT
+### Version 4: Minimal Separator (CURRENT)
+- **Branch**: `header-v4-minimal-separator`
+- **Commit**: `fc93a68`
 - **Approach**: Subtle gradient border line
 - **Effect**: Clean separation without harshness
 - **Best For**: Professional, timeless design
@@ -127,14 +137,38 @@ npm run build
 
 ### View Current Version (V4)
 ```bash
-git checkout copilot/improve-header-design-again
+git checkout header-v4-minimal-separator
 npm install
 npm run dev
 # Open http://localhost:5173
 ```
 
-### Test Different Versions
-See `HEADER_VERSIONS.md` for detailed instructions on testing each version.
+### Test Any Version
+
+Each version is available in its own dedicated branch:
+
+```bash
+# Version 1: Gradient Fade
+git checkout header-v1-gradient-fade
+
+# Version 2: Blur/Shadow Fade
+git checkout header-v2-blur-shadow
+
+# Version 3: Glassmorphism
+git checkout header-v3-glassmorphism
+
+# Version 4: Minimal Separator (Recommended)
+git checkout header-v4-minimal-separator
+```
+
+After checking out any branch:
+```bash
+npm install
+npm run dev
+# Open http://localhost:5173
+```
+
+See `HEADER_VERSIONS.md` for detailed testing instructions and version comparisons.
 
 ## Recommendations
 

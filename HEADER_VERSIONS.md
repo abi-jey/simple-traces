@@ -11,56 +11,48 @@ All versions include the following improvements:
 
 ## How to Test Versions
 
-All versions are committed sequentially in the `copilot/improve-header-design-again` branch. Each version builds on the previous one, with the CSS changes being the primary difference.
+Each version is now available in its own dedicated branch for easy testing and comparison.
 
-### Quick Start - Testing Latest Version (Recommended)
+### Quick Start - Testing Any Version
+
+Simply check out the branch for the version you want to test:
+
 ```bash
-git checkout copilot/improve-header-design-again
+# Version 1: Gradient Fade
+git checkout header-v1-gradient-fade
 npm install
 npm run dev
-# Open http://localhost:5173 in your browser
-```
 
-### Testing Specific Versions
-
-To test a specific version, you have two options:
-
-#### Option 1: View Specific Commit (Safer, Read-Only)
-```bash
-git checkout copilot/improve-header-design-again
-# View the CSS for a specific version without changing your working tree
-git show <commit-hash>:src/simple-traces/frontend/src/App.css > /tmp/version.css
-```
-
-#### Option 2: Create Test Branch for a Version (Recommended)
-**Warning**: This creates a new branch and switches to a specific commit. Your current changes will be preserved in your original branch.
-
-```bash
-# First, ensure your current work is saved
-git checkout copilot/improve-header-design-again
-
-# Create a new branch for testing a specific version
-git checkout -b test-version-1 6e5b567  # Replace hash with desired version
-
+# Version 2: Blur/Shadow Fade
+git checkout header-v2-blur-shadow
 npm install
 npm run dev
-# Open http://localhost:5173
-```
 
-#### Option 3: Temporarily View a Commit (Advanced)
-```bash
-git checkout copilot/improve-header-design-again
-# This puts you in "detached HEAD" state - perfect for temporary viewing
-git checkout 6e5b567  # Replace with desired commit
+# Version 3: Glassmorphism
+git checkout header-v3-glassmorphism
+npm install
 npm run dev
-# When done: git checkout copilot/improve-header-design-again
+
+# Version 4: Minimal Separator (Recommended)
+git checkout header-v4-minimal-separator
+npm install
+npm run dev
 ```
 
-### Version Commit Hashes
-- **Version 1** (Gradient Fade): `6e5b567`
-- **Version 2** (Blur/Shadow): `1c8918e`
-- **Version 3** (Glassmorphism): `e319f83`
-- **Version 4** (Minimal Separator): `fc93a68` ← Current/Latest
+Open http://localhost:5173 in your browser after starting the dev server.
+
+### Available Branches
+
+- **`header-v1-gradient-fade`** - Version 1: Gradient fade from header to body
+- **`header-v2-blur-shadow`** - Version 2: Blur/shadow fade effect
+- **`header-v3-glassmorphism`** - Version 3: Transparent glassmorphism
+- **`header-v4-minimal-separator`** - Version 4: Minimal with subtle separator (Recommended)
+
+All versions are also available as commits in the main PR branch (`copilot/improve-header-design-again`) for reference:
+- **Version 1**: `6e5b567`
+- **Version 2**: `1c8918e`
+- **Version 3**: `e319f83`
+- **Version 4**: `fc93a68`
 
 ## Version Details
 
