@@ -16,47 +16,37 @@
   box-shadow: none;
   border-bottom: none;
   position: relative;
-  overflow: hidden;
+  overflow: visible;
   transition: all 0.3s ease;
 }
 
-/* Animated gradient wave effect */
+/* Bold accent bar with depth and shadow */
 .header::before {
   content: '';
   position: absolute;
-  bottom: 0;
-  left: -50%;
-  right: -50%;
-  height: 4px;
-  background: linear-gradient(90deg, 
-    transparent 0%, 
-    var(--primary) 25%, 
-    var(--accent) 50%, 
-    var(--primary) 75%, 
-    transparent 100%);
-  animation: waveSlide 8s ease-in-out infinite;
+  bottom: -8px;
+  left: 0;
+  right: 0;
+  height: 8px;
+  background: linear-gradient(90deg, var(--primary) 0%, var(--accent) 50%, var(--primary) 100%);
+  box-shadow: 0 4px 12px -2px var(--primary-dark), 0 2px 6px -1px var(--accent);
+  border-radius: 0 0 8px 8px;
   pointer-events: none;
+  z-index: 2;
 }
 
-@keyframes waveSlide {
-  0%, 100% {
-    transform: translateX(0);
-  }
-  50% {
-    transform: translateX(25%);
-  }
-}
-
+/* Soft fade below the accent bar */
 .header::after {
   content: '';
   position: absolute;
-  bottom: -25px;
-  left: 0;
-  right: 0;
-  height: 25px;
-  background: radial-gradient(ellipse at center top, var(--header-fade-glow) 0%, transparent 70%);
+  bottom: -30px;
+  left: 5%;
+  right: 5%;
+  height: 22px;
+  background: radial-gradient(ellipse at center top, var(--header-fade-glow) 0%, transparent 100%);
+  filter: blur(8px);
   pointer-events: none;
-  opacity: 0.4;
+  z-index: 1;
 }
 
 .header h1 {
