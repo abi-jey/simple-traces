@@ -13,30 +13,58 @@
   color: var(--header-text);
   padding: 1.25rem 2rem;
   text-align: center;
-  box-shadow: var(--header-neumorphic-shadow);
+  box-shadow: none;
   border-bottom: none;
   position: relative;
-  border-radius: 0 0 24px 24px;
   transition: all 0.3s ease;
 }
 
-/* Neumorphic soft shadow effect - no borders, just depth */
+/* Dynamic color-shifting gradient line */
 .header::before {
-  content: none;
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, 
+    var(--primary) 0%, 
+    var(--accent) 33%, 
+    var(--success) 66%, 
+    var(--primary) 100%);
+  background-size: 200% 100%;
+  animation: colorShift 6s ease-in-out infinite;
+  pointer-events: none;
 }
 
+@keyframes colorShift {
+  0%, 100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+/* Glowing effect that follows the color shift */
 .header::after {
   content: '';
   position: absolute;
-  bottom: -20px;
-  left: 8%;
-  right: 8%;
-  height: 20px;
-  background: var(--header-bg);
-  filter: blur(20px);
-  opacity: 0.3;
+  bottom: -3px;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: inherit;
+  filter: blur(8px);
+  opacity: 0.6;
   pointer-events: none;
-  border-radius: 50%;
+  background: linear-gradient(90deg, 
+    var(--primary) 0%, 
+    var(--accent) 33%, 
+    var(--success) 66%, 
+    var(--primary) 100%);
+  background-size: 200% 100%;
+  animation: colorShift 6s ease-in-out infinite;
 }
 
 .header h1 {
