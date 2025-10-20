@@ -11,17 +11,56 @@ All versions include the following improvements:
 
 ## How to Test Versions
 
-All versions are committed sequentially in the `copilot/improve-header-design-again` branch. To test a specific version:
+All versions are committed sequentially in the `copilot/improve-header-design-again` branch. Each version builds on the previous one, with the CSS changes being the primary difference.
 
-1. Check out the branch: `git checkout copilot/improve-header-design-again`
-2. Reset to the specific commit for the version you want to test:
-   - Version 1: `git reset --hard 6e5b567`
-   - Version 2: `git reset --hard 1c8918e`
-   - Version 3: `git reset --hard e319f83`
-   - Version 4: `git reset --hard fc93a68` (latest)
-3. Install dependencies: `npm install`
-4. Start dev server: `npm run dev`
-5. Open http://localhost:5173 in your browser
+### Quick Start - Testing Latest Version (Recommended)
+```bash
+git checkout copilot/improve-header-design-again
+npm install
+npm run dev
+# Open http://localhost:5173 in your browser
+```
+
+### Testing Specific Versions
+
+To test a specific version, you have two options:
+
+#### Option 1: View Specific Commit (Safer, Read-Only)
+```bash
+git checkout copilot/improve-header-design-again
+# View the CSS for a specific version without changing your working tree
+git show <commit-hash>:src/simple-traces/frontend/src/App.css > /tmp/version.css
+```
+
+#### Option 2: Create Test Branch for a Version (Recommended)
+**Warning**: This creates a new branch and switches to a specific commit. Your current changes will be preserved in your original branch.
+
+```bash
+# First, ensure your current work is saved
+git checkout copilot/improve-header-design-again
+
+# Create a new branch for testing a specific version
+git checkout -b test-version-1 6e5b567  # Replace hash with desired version
+
+npm install
+npm run dev
+# Open http://localhost:5173
+```
+
+#### Option 3: Temporarily View a Commit (Advanced)
+```bash
+git checkout copilot/improve-header-design-again
+# This puts you in "detached HEAD" state - perfect for temporary viewing
+git checkout 6e5b567  # Replace with desired commit
+npm run dev
+# When done: git checkout copilot/improve-header-design-again
+```
+
+### Version Commit Hashes
+- **Version 1** (Gradient Fade): `6e5b567`
+- **Version 2** (Blur/Shadow): `1c8918e`
+- **Version 3** (Glassmorphism): `e319f83`
+- **Version 4** (Minimal Separator): `fc93a68` ← Current/Latest
 
 ## Version Details
 
@@ -166,10 +205,30 @@ All versions support both light and dark themes. To test:
 
 ## Screenshots
 
-Screenshots of all versions are available in the `/tmp/playwright-logs/` directory after running the development server.
+Screenshots were taken during development and testing. You can generate your own screenshots by:
 
-- Version 1 Light: `page-2025-10-20T00-01-52-075Z.png`
-- Version 2 Light: `page-2025-10-20T00-03-10-549Z.png`
-- Version 3 Light: `page-2025-10-20T00-03-58-950Z.png`
-- Version 4 Light: `page-2025-10-20T00-04-46-599Z.png`
-- Version 4 Dark: `page-2025-10-20T00-05-17-442Z.png`
+1. Running the development server (`npm run dev`)
+2. Opening http://localhost:5173 in your browser
+3. Taking screenshots of each version by checking out different commits
+4. Testing both light and dark modes using the theme toggle button
+
+To generate screenshots programmatically:
+```bash
+# Install playwright if not already installed
+npx playwright install chromium
+
+# Use playwright to take screenshots of each version
+# (You can create a script or use browser dev tools)
+```
+
+### Reference Screenshots from Development
+
+During development, the following screenshots were captured to `/tmp/playwright-logs/`:
+
+- Version 1 Light mode
+- Version 2 Light mode  
+- Version 3 Light mode
+- Version 4 Light mode
+- Version 4 Dark mode
+
+**Note**: These are temporary development artifacts and not committed to the repository.
