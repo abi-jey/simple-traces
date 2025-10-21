@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import './App.css'
+import WaterfallView from './WaterfallView'
+import ConversationDetails from './ConversationDetails'
 
 function App() {
   // Groups state
@@ -13,6 +15,7 @@ function App() {
   const [selectedGroup, setSelectedGroup] = useState(null)
   const [groupSpans, setGroupSpans] = useState([])
   const [spansLoading, setSpansLoading] = useState(false)
+  const [selectedSpan, setSelectedSpan] = useState(null)
 
   // Polling
   const abortRef = useRef(null)
@@ -27,10 +30,11 @@ function App() {
   const [theme, setTheme] = useState('light')
 
   // Simple SPA routing & projects
-  const [view, setView] = useState('main') // 'main' | 'projects'
+  const [view, setView] = useState('main') // 'main' | 'projects' | 'conversation'
   const [project, setProject] = useState('')
   const [projectId, setProjectId] = useState('')
   const [projects, setProjects] = useState([])
+  const [currentConversationId, setCurrentConversationId] = useState(null)
 
   useEffect(() => {
     const saved = localStorage.getItem('st-theme')
@@ -63,8 +67,10 @@ function App() {
     const slugify = (s) => s.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '')
     const parseRoute = (path) => {
       if (path === '/projects') return { route: 'projects' }
-      const m = path.match(/^\/projects\/([^/]+)\/?$/)
-      if (m) return { route: 'project', id: decodeURIComponent(m[1]) }
+      const projectMatch = path.match(/^\/projects\/([^/]+)\/?$/)
+      if (projectMatch) return { route: 'project', id: decodeURIComponent(projectMatch[1]) }
+      const conversationMatch = path.match(/^\/conversations\/([^/]+)\/?$/)
+      if (conversationMatch) return { route: 'conversation', id: decodeURIComponent(conversationMatch[1]) }
       return { route: 'root' }
     }
     const navigate = (path) => {
@@ -97,6 +103,9 @@ function App() {
       applyProject(route.id)
       setView('main')
       fetchGroups(true)
+    } else if (route.route === 'conversation') {
+      setCurrentConversationId(route.id)
+      setView('conversation')
     } else {
       // root: if saved project exists, navigate to it; otherwise go to projects
       if (savedId) {
@@ -122,8 +131,10 @@ function App() {
     const slugify = (s) => s.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '')
     const parseRoute = (path) => {
       if (path === '/projects') return { route: 'projects' }
-      const m = path.match(/^\/projects\/([^/]+)\/?$/)
-      if (m) return { route: 'project', id: decodeURIComponent(m[1]) }
+      const projectMatch = path.match(/^\/projects\/([^/]+)\/?$/)
+      if (projectMatch) return { route: 'project', id: decodeURIComponent(projectMatch[1]) }
+      const conversationMatch = path.match(/^\/conversations\/([^/]+)\/?$/)
+      if (conversationMatch) return { route: 'conversation', id: decodeURIComponent(conversationMatch[1]) }
       return { route: 'root' }
     }
     const onPop = () => {
@@ -148,6 +159,9 @@ function App() {
         // refresh data for the new route project
         setGroups([]); setGroupsBefore(null); setHasMoreGroups(true); setGroupsLoading(true)
         fetchGroups(true)
+      } else if (r.route === 'conversation') {
+        setCurrentConversationId(r.id)
+        setView('conversation')
       } else {
         // root
         const savedName = localStorage.getItem('st-project') || ''
@@ -237,6 +251,17 @@ function App() {
     } catch (e) {
       alert('Delete failed: ' + e.message)
     }
+  }
+
+  const navigateToConversation = (conversationId) => {
+    const path = `/conversations/${encodeURIComponent(conversationId)}`
+    window.history.pushState({}, '', path)
+    setCurrentConversationId(conversationId)
+    setView('conversation')
+  }
+
+  const navigateBack = () => {
+    window.history.back()
   }
 
   // Infinite scroll: observe sentinel at bottom of list
@@ -494,14 +519,47 @@ function App() {
                   <div className="trace-stats">
                     <span>🕒 {formatTS(g.first_start_time)}</span>
                     <span>→ {formatTS(g.last_end_time)}</span>
-                    <span>🧵 {g.trace_id.slice(0, 8)}…</span>
+                    <span 
+                      className="conversation-id-link"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        navigateToConversation(g.trace_id)
+                      }}
+                      title="Open conversation details"
+                    >
+                      🧵 {g.trace_id.slice(0, 8)}…
+                    </span>
                   </div>
                   <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
-                    <button className="close-btn" title="Delete thread" onClick={() => deleteGroup(g)}>
+                    <button 
+                      className="close-btn" 
+                      title="Delete thread" 
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        deleteGroup(g)
+                      }}
+                    >
                       🗑️
                     </button>
-                    <button className="close-btn" title="Open thread" onClick={() => fetchGroupSpans(g)}>
-                      🔍
+                    <button 
+                      className="close-btn" 
+                      title="Preview thread" 
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        fetchGroupSpans(g)
+                      }}
+                    >
+                      👁️
+                    </button>
+                    <button 
+                      className="close-btn" 
+                      title="Open full details" 
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        navigateToConversation(g.trace_id)
+                      }}
+                    >
+                      📊
                     </button>
                   </div>
                 </div>
@@ -517,7 +575,7 @@ function App() {
                     <h2>{(groupSpans[0]?.name) || `Thread: ${selectedGroup.trace_id.slice(0, 12)}…`}</h2>
                     <div className="subtitle">{buildSubtitleText(selectedGroup, groupSpans)}</div>
                   </div>
-                  <button onClick={() => { setSelectedGroup(null); setGroupSpans([]) }} className="close-btn">
+                  <button onClick={() => { setSelectedGroup(null); setGroupSpans([]); setSelectedSpan(null) }} className="close-btn">
                     ×
                   </button>
                 </div>
@@ -530,6 +588,14 @@ function App() {
                   <div className="stat"><div className="stat-label">End</div><div className="stat-value">{formatTS(selectedGroup.last_end_time)}</div></div>
                 </div>
 
+                {/* View Details Button */}
+                <button 
+                  className="view-details-btn"
+                  onClick={() => navigateToConversation(selectedGroup.trace_id)}
+                >
+                  📊 View Full Details
+                </button>
+
                 {spansLoading && <div className="loading">Loading spans…</div>}
 
                 {!spansLoading && groupSpans.length === 0 && (
@@ -539,44 +605,73 @@ function App() {
                 )}
 
                 {!spansLoading && groupSpans.length > 0 && (
-                  <div className="detail-section">
-                    <h3>Conversation</h3>
-                    <div className="detail-content" style={{ maxHeight: 'unset' }}>
-                      <div className="chat">
-                        {groupSpans.map((sp) => (
-                          <div key={sp.span_id}>
-                            <div style={{ textAlign: 'center', color: '#6b7280', fontSize: '0.75rem', margin: '0.25rem 0' }}>
-                              {formatTS(sp.start_time)} {sp.status_code ? `• ${sp.status_code}` : ''}
-                            </div>
-                            {buildMessages(sp).map((m, idx) => (
-                              <div key={idx} className={`msg ${m.role}`}>
-                                <div className="meta">{m.role}</div>
-                                <div className="text">{m.text}</div>
-                              </div>
-                            ))}
-                            {sp.attributes && (
-                              <details style={{ marginTop: '0.25rem' }}>
-                                <summary>attributes</summary>
-                                {renderAttrTable(sp.attributes)}
-                              </details>
-                            )}
-                            {sp.events && sp.events !== '[]' && (
-                              <details style={{ marginTop: '0.25rem' }}>
-                                <summary>events</summary>
-                                <pre className="detail-content">{sp.events}</pre>
-                              </details>
-                            )}
+                  <>
+                    {/* Waterfall Preview */}
+                    <div className="detail-section">
+                      <h3>Timeline Preview</h3>
+                      <WaterfallView 
+                        spans={groupSpans} 
+                        onSpanClick={setSelectedSpan}
+                        selectedSpanId={selectedSpan?.span_id}
+                      />
+                    </div>
+
+                    {/* Selected Span Details */}
+                    {selectedSpan && (
+                      <div className="detail-section">
+                        <h3>Span: {selectedSpan.name}</h3>
+                        <div className="detail-content">
+                          <div style={{ marginBottom: '0.5rem' }}>
+                            <strong>Duration:</strong> {selectedSpan.duration_ms}ms
                           </div>
-                        ))}
+                          <div style={{ marginBottom: '0.5rem' }}>
+                            <strong>Status:</strong> {selectedSpan.status_code || 'N/A'}
+                          </div>
+                          {selectedSpan.attributes && (
+                            <details open style={{ marginTop: '0.5rem' }}>
+                              <summary>Attributes</summary>
+                              {renderAttrTable(selectedSpan.attributes)}
+                            </details>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Conversation Messages */}
+                    <div className="detail-section">
+                      <h3>Conversation</h3>
+                      <div className="detail-content" style={{ maxHeight: 'unset' }}>
+                        <div className="chat">
+                          {groupSpans.map((sp) => (
+                            <div key={sp.span_id}>
+                              <div style={{ textAlign: 'center', color: '#6b7280', fontSize: '0.75rem', margin: '0.25rem 0' }}>
+                                {formatTS(sp.start_time)} {sp.status_code ? `• ${sp.status_code}` : ''}
+                              </div>
+                              {buildMessages(sp).map((m, idx) => (
+                                <div key={idx} className={`msg ${m.role}`}>
+                                  <div className="meta">{m.role}</div>
+                                  <div className="text">{m.text}</div>
+                                </div>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
-                  </div>
+                  </>
                 )}
               </div>
             )}
           </div>
         )}
           </>
+        )}
+
+        {view === 'conversation' && currentConversationId && (
+          <ConversationDetails 
+            conversationId={currentConversationId}
+            onClose={navigateBack}
+          />
         )}
       </div>
     </div>
