@@ -176,9 +176,9 @@ html, body, #root {
 
 .container {
   flex: 1;
-  max-width: 1400px;
+  max-width: 1600px;
   margin: 0 auto;
-  padding: 1.5rem;
+  padding: 1rem;
   width: 100%;
   animation: fadeIn 0.4s ease-out;
 }
@@ -270,8 +270,8 @@ html, body, #root {
 
 .content {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 2rem;
+  grid-template-columns: 1.05fr 1.25fr;
+  gap: 1.25rem;
   align-items: start;
   animation: fadeIn 0.5s ease-out;
 }
@@ -287,7 +287,7 @@ html, body, #root {
   border-radius: 16px;
   box-shadow: var(--shadow-lg);
   border: 1px solid var(--border);
-  padding: 1.25rem;
+  padding: 1rem;
   max-height: calc(100vh - 200px);
   overflow-y: auto;
   transition: all 0.3s ease;
@@ -411,6 +411,72 @@ html, body, #root {
   font-weight: 500;
 }
 
+/* Conversation item styles */
+.conversation-item {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.875rem;
+  margin-bottom: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  background: var(--panel);
+  animation: slideIn 0.3s ease-out;
+}
+
+.conversation-item:hover {
+  border-color: var(--primary);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+  background: var(--panel-alt);
+}
+
+.conversation-item.selected {
+  border-color: var(--primary);
+  background: var(--panel-alt);
+  box-shadow: var(--shadow-md);
+}
+
+.conversation-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.conversation-title {
+  font-weight: 600;
+  color: var(--primary);
+  font-size: 0.875rem;
+}
+
+.conversation-meta {
+  display: flex;
+  gap: 0.875rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+.sub-conversations {
+  margin-left: 16px;
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+}
+
+.conversation-item.sub-conversation {
+  margin-top: 4px;
+  background-color: var(--panel-alt);
+  border-left: 3px solid var(--border);
+}
+
+.conversation-item.sub-conversation:hover {
+  background-color: var(--bg-secondary);
+}
+
+.conversation-item.sub-conversation.selected {
+  background-color: var(--panel);
+  border-left-color: var(--primary);
+}
+
 .trace-item {
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -488,7 +554,7 @@ html, body, #root {
   border-radius: 16px;
   box-shadow: var(--shadow-lg);
   border: 1px solid var(--border);
-  padding: 1.25rem;
+  padding: 1rem;
   max-height: calc(100vh - 200px);
   overflow-y: auto;
   position: sticky;

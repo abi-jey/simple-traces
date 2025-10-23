@@ -14,36 +14,51 @@
   padding-bottom: 0.75rem;
   border-bottom: 1px solid var(--border);
 }
-
-.waterfall-title {
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--text);
+/* Compact density */
+.waterfall-container.compact {
+  padding: 0.6rem 0.75rem;
 }
 
+.waterfall-container.compact .waterfall-row { gap: 0.3rem; padding: 0.18rem 0.3rem; grid-template-columns: 140px 1fr; }
+.waterfall-title { font-size: 0.95rem; font-weight: 600; color: var(--text); }
+.waterfall-container.compact .waterfall-track { height: 16px; }
+
+.waterfall-container.compact .span-name { font-size: 0.78rem; }
 .waterfall-duration {
   font-size: 0.875rem;
   color: var(--text-secondary);
   font-weight: 500;
 }
 
-.waterfall-timeline {
+/* Legend */
+.waterfall-legend {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 0.5rem;
-  margin-bottom: 0.5rem;
+  margin: 0.5rem 0 0.25rem 0;
+}
+.waterfall-container.compact .waterfall-axis { height: 20px; margin-top: 0.3rem; margin-left: 140px; }
+.legend-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  background: var(--panel-alt);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.legend-chip .dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.06) inset;
 }
 
-.waterfall-row {
-  display: grid;
-  grid-template-columns: 200px 1fr;
-  gap: 0.75rem;
-  align-items: center;
-  padding: 0.5rem;
-  border-radius: 8px;
-  transition: all 0.2s ease;
-  cursor: pointer;
-}
+.waterfall-timeline { display: flex; flex-direction: column; gap: 0.12rem; margin-bottom: 0.35rem; }
+
+.waterfall-row { display: grid; grid-template-columns: 160px 1fr; gap: 0.35rem; align-items: center; padding: 0.2rem 0.35rem; border-radius: 8px; transition: all 0.2s ease; cursor: pointer; }
 
 .waterfall-row:hover {
   background: var(--panel-alt);
@@ -57,36 +72,13 @@
   padding: calc(0.5rem - 1px);
 }
 
-.waterfall-label {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  min-width: 0;
-}
+.waterfall-label { display: flex; flex-direction: column; gap: 0.15rem; min-width: 0; }
 
-.span-name {
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.span-name { font-size: 0.82rem; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.span-duration {
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  font-family: 'Courier New', monospace;
-}
+.span-duration { font-size: 0.72rem; color: var(--text-secondary); font-family: 'Courier New', monospace; }
 
-.waterfall-track {
-  position: relative;
-  height: 32px;
-  background: var(--panel-alt);
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  overflow: hidden;
-}
+.waterfall-track { position: relative; height: 22px; background: var(--panel-alt); border-radius: 6px; border: 1px solid var(--border); overflow: hidden; background-image: linear-gradient(to right, var(--border), var(--border)); background-repeat: no-repeat; background-size: 1px 100%, 1px 100%, 1px 100%; background-position: 25% 0, 50% 0, 75% 0; }
 
 .waterfall-bar {
   position: absolute;
@@ -99,6 +91,7 @@
   transition: all 0.2s ease;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   cursor: pointer;
+  border: 1px solid rgba(255,255,255,0.25);
 }
 
 .waterfall-bar:hover {
@@ -108,14 +101,11 @@
   z-index: 10;
 }
 
-.waterfall-bar-label {
-  font-size: 0.75rem;
-  font-weight: 500;
-  color: white;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+.waterfall-bar-label { font-size: 0.72rem; font-weight: 600; color: white; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); }
+
+/* Hide inner text when the bar is very small to avoid clutter */
+.waterfall-bar.narrow .waterfall-bar-label {
+  display: none;
 }
 
 .waterfall-axis {
@@ -143,15 +133,25 @@
   font-size: 0.875rem;
 }
 
+/* Groups */
+.waterfall-groups { display: flex; flex-direction: column; gap: 0.5rem; }
+.waterfall-group { padding-top: 0.25rem; border-top: 1px dashed var(--border); }
+.waterfall-group:first-child { border-top: none; padding-top: 0; }
+.group-header { display: flex; justify-content: space-between; align-items: baseline; color: var(--text-secondary); font-size: 0.82rem; margin: 0.15rem 0 0.35rem; padding: 0 0.2rem; }
+.group-title { font-weight: 600; color: var(--text); }
+.group-meta { font-variant-numeric: tabular-nums; }
+/* Group summary row */
+.group-row { background: var(--panel); border: 1px dashed var(--border); }
+.group-row:hover { background: var(--panel-alt); }
+.group-bar { opacity: 0.92; }
+.waterfall-container.compact .waterfall-row { grid-template-columns: 120px 1fr; }
+.waterfall-container.compact .waterfall-axis { height: 20px; margin-top: 0.3rem; margin-left: 120px; }
+
 /* Responsive adjustments */
 @media (max-width: 768px) {
-  .waterfall-row {
-    grid-template-columns: 150px 1fr;
-  }
+  .waterfall-row { grid-template-columns: 140px 1fr; }
   
-  .waterfall-axis {
-    margin-left: 150px;
-  }
+  .waterfall-axis { margin-left: 140px; }
 }
 
 @media (max-width: 480px) {

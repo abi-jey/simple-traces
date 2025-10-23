@@ -48,10 +48,11 @@
   box-shadow: var(--shadow-sm);
 }
 
-.details-page-content {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 1.5rem;
+.details-page-content { display: grid; grid-template-columns: 1fr; gap: 1.25rem; }
+
+/* Use two columns on larger screens to leverage width */
+@media (min-width: 1100px) {
+  .details-page-content { grid-template-columns: 1.6fr 1fr; align-items: start; }
 }
 
 .waterfall-section {
@@ -62,10 +63,10 @@
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 1.25rem;
+  padding: 1rem;
   box-shadow: var(--shadow-lg);
   animation: slideInRight 0.3s ease-out;
-  max-height: calc(100vh - 400px);
+  max-height: calc(100vh - 320px);
   overflow-y: auto;
 }
 
@@ -105,4 +106,48 @@
     flex-direction: column;
     gap: 0.5rem;
   }
+}
+
+/* Linked and sub-conversations styling */
+.linked-conversations,
+.sub-conversations-info {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.linked-label {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.linked-conv-chip {
+  background-color: var(--panel-alt);
+  color: var(--primary);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-family: monospace;
+  border: 1px solid var(--border);
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.linked-conv-chip:hover {
+  background-color: var(--primary);
+  color: white;
+}
+
+.linked-conv-chip.sub {
+  background-color: var(--bg-secondary);
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.linked-conv-chip.sub:hover {
+  background-color: var(--success);
+  color: white;
 }

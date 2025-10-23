@@ -68,6 +68,11 @@ func Run() error {
 	// Conversations API
 	api.HandleFunc("/conversations", getConversationsHandler(db, logger)).Methods("GET")
 	api.HandleFunc("/conversations/{id}", deleteConversationHandler(db, logger)).Methods("DELETE")
+	api.HandleFunc("/conversations/{id}/linked", getLinkedConversationsHandler(db, logger)).Methods("GET")
+	api.HandleFunc("/conversations/{id}/sub", getSubConversationsHandler(db, logger)).Methods("GET")
+
+	// Admin: backfill derived attributes for existing spans
+	api.HandleFunc("/admin/backfill-derived", backfillDerivedHandler(db, logger)).Methods("POST")
 
 	// OpenTelemetry OTLP endpoint
 	if config.OTLPEnabled {
@@ -76,8 +81,8 @@ func Run() error {
 		logger.Info("OTLP HTTP endpoint enabled at /v1/traces")
 	}
 
-	// Serve embedded frontend static files
-	router.PathPrefix("/").Handler(http.FileServer(getFrontendFS()))
+	// Serve embedded frontend static files with SPA fallback
+	router.PathPrefix("/").Handler(newSPAHandler(getFrontendFS()))
 
 	// Enable CORS for development
 	router.Use(corsMiddleware)
@@ -769,6 +774,7 @@ func getConversationsHandler(db Database, logger *Logger) http.HandlerFunc {
 }
 
 // deleteConversationHandler deletes all data linked to a conversation id
+// deleteConversationHandler deletes all data linked to a conversation id
 func deleteConversationHandler(db Database, logger *Logger) http.HandlerFunc { // fmt: skip
 	return func(w http.ResponseWriter, r *http.Request) {
 		vars := mux.Vars(r)
@@ -793,5 +799,72 @@ func deleteConversationHandler(db Database, logger *Logger) http.HandlerFunc { /
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "deleted_spans": nSpans})
+	}
+}
+
+// getLinkedConversationsHandler returns conversations that this conversation links to
+func getLinkedConversationsHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		id := strings.TrimSpace(vars["id"])
+		if id == "" {
+			http.Error(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		linked, err := db.GetLinkedConversations(id)
+		if err != nil {
+			logger.Error("Failed to get linked conversations: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to get linked conversations: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(linked)
+	}
+}
+
+// getSubConversationsHandler returns conversations that link to this conversation
+func getSubConversationsHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		id := strings.TrimSpace(vars["id"])
+		if id == "" {
+			http.Error(w, "missing id", http.StatusBadRequest)
+			return
+		}
+		subs, err := db.GetSubConversations(id)
+		if err != nil {
+			logger.Error("Failed to get sub conversations: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to get sub conversations: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(subs)
+	}
+}
+
+// backfillDerivedHandler triggers a one-off backfill of derived span attributes (st.model, st.category).
+// POST /api/admin/backfill-derived?limit=2000
+func backfillDerivedHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		limit := 2000
+		if s := strings.TrimSpace(r.URL.Query().Get("limit")); s != "" {
+			if v, err := strconv.Atoi(s); err == nil && v > 0 {
+				limit = v
+			}
+		}
+		logger.Info("Starting derived attributes backfill with limit=%d", limit)
+		updated, upserts, err := db.BackfillDerived(limit)
+		if err != nil {
+			logger.Error("Backfill failed: %v", err)
+			http.Error(w, fmt.Sprintf("backfill error: %v", err), http.StatusInternalServerError)
+			return
+		}
+		logger.Info("Backfill completed: spansUpdated=%d attrUpserts=%d", updated, upserts)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"ok":               true,
+			"spans_updated":    updated,
+			"attributes_upsert": upserts,
+		})
 	}
 }

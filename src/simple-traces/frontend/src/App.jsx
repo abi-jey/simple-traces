@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import './App.css'
 import WaterfallView from './WaterfallView'
 import ConversationDetails from './ConversationDetails'
+import NotFound from './NotFound'
 
 function App() {
   // Groups state
@@ -15,7 +16,12 @@ function App() {
   const [selectedGroup, setSelectedGroup] = useState(null)
   const [groupSpans, setGroupSpans] = useState([])
   const [spansLoading, setSpansLoading] = useState(false)
+  const [conversations, setConversations] = useState([])
+  const [selectedConversation, setSelectedConversation] = useState(null)
   const [selectedSpan, setSelectedSpan] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [subConversations, setSubConversations] = useState({})
 
   // Polling
   const abortRef = useRef(null)
@@ -66,12 +72,13 @@ function App() {
     setProjects(storedProjects)
     const slugify = (s) => s.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '')
     const parseRoute = (path) => {
+      if (path === '/' || path === '') return { route: 'root' }
       if (path === '/projects') return { route: 'projects' }
       const projectMatch = path.match(/^\/projects\/([^/]+)\/?$/)
       if (projectMatch) return { route: 'project', id: decodeURIComponent(projectMatch[1]) }
       const conversationMatch = path.match(/^\/conversations\/([^/]+)\/?$/)
       if (conversationMatch) return { route: 'conversation', id: decodeURIComponent(conversationMatch[1]) }
-      return { route: 'root' }
+      return { route: '404' }
     }
     const navigate = (path) => {
       if (window.location.pathname !== path) {
@@ -106,7 +113,10 @@ function App() {
     } else if (route.route === 'conversation') {
       setCurrentConversationId(route.id)
       setView('conversation')
-    } else {
+    } else if (route.route === '404') {
+      setView('404')
+      // Stay on the invalid URL to show it in address bar
+    } else if (route.route === 'root') {
       // root: if saved project exists, navigate to it; otherwise go to projects
       if (savedId) {
         applyProject(savedId)
@@ -130,12 +140,13 @@ function App() {
   useEffect(() => {
     const slugify = (s) => s.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '')
     const parseRoute = (path) => {
+      if (path === '/' || path === '') return { route: 'root' }
       if (path === '/projects') return { route: 'projects' }
       const projectMatch = path.match(/^\/projects\/([^/]+)\/?$/)
       if (projectMatch) return { route: 'project', id: decodeURIComponent(projectMatch[1]) }
       const conversationMatch = path.match(/^\/conversations\/([^/]+)\/?$/)
       if (conversationMatch) return { route: 'conversation', id: decodeURIComponent(conversationMatch[1]) }
-      return { route: 'root' }
+      return { route: '404' }
     }
     const onPop = () => {
       const r = parseRoute(window.location.pathname)
@@ -162,7 +173,9 @@ function App() {
       } else if (r.route === 'conversation') {
         setCurrentConversationId(r.id)
         setView('conversation')
-      } else {
+      } else if (r.route === '404') {
+        setView('404')
+      } else if (r.route === 'root') {
         // root
         const savedName = localStorage.getItem('st-project') || ''
         const pid = localStorage.getItem('st-project-id') || (savedName ? slugify(savedName) : '')
@@ -390,23 +403,39 @@ function App() {
     )
   }
 
-  const buildMessages = (sp) => {
-    const msgs = []
-    let attrs = null
-    try { attrs = sp.attributes ? JSON.parse(sp.attributes) : null } catch (e) { attrs = null }
-    if (attrs) {
-      const sys = attrs['gen_ai.system'] || attrs['llm.system']
-      const user = attrs['llm.input'] || attrs['gen_ai.prompt']
-      const assistant = attrs['llm.output'] || attrs['gen_ai.response']
-      if (sys) msgs.push({ role: 'system', text: String(sys) })
-      if (user) msgs.push({ role: 'user', text: String(user) })
-      if (assistant) msgs.push({ role: 'assistant', text: String(assistant) })
-    }
-    if (msgs.length === 0) {
-      // Fallback to span name
-      msgs.push({ role: 'system', text: sp.name })
-    }
-    return msgs
+  // Chat-style conversation blade removed; no helper needed here
+
+  // Build hierarchical span tree from flat list
+  const buildSpanTree = (spans) => {
+    if (!spans || spans.length === 0) return []
+    
+    const spanMap = new Map()
+    const rootSpans = []
+    
+    // First pass: create map of all spans
+    spans.forEach(span => {
+      spanMap.set(span.span_id, { ...span, children: [] })
+    })
+    
+    // Second pass: build tree structure
+    spans.forEach(span => {
+      const node = spanMap.get(span.span_id)
+      if (!span.parent_span_id || span.parent_span_id === '' || span.parent_span_id === '0000000000000000') {
+        // This is a root span (no parent or parent is zero/empty)
+        rootSpans.push(node)
+      } else {
+        // This is a child span
+        const parent = spanMap.get(span.parent_span_id)
+        if (parent) {
+          parent.children.push(node)
+        } else {
+          // Parent not found, treat as root
+          rootSpans.push(node)
+        }
+      }
+    })
+    
+    return rootSpans
   }
 
   const buildSubtitleText = (group, spans) => {
@@ -628,6 +657,9 @@ function App() {
                         spans={groupSpans} 
                         onSpanClick={setSelectedSpan}
                         selectedSpanId={selectedSpan?.span_id}
+                        compact={true}
+                        showLegend={false}
+                        defaultCollapsed={true}
                       />
                     </div>
 
@@ -652,27 +684,7 @@ function App() {
                       </div>
                     )}
 
-                    {/* Conversation Messages */}
-                    <div className="detail-section">
-                      <h3>Conversation</h3>
-                      <div className="detail-content" style={{ maxHeight: 'unset' }}>
-                        <div className="chat">
-                          {groupSpans.map((sp) => (
-                            <div key={sp.span_id}>
-                              <div style={{ textAlign: 'center', color: '#6b7280', fontSize: '0.75rem', margin: '0.25rem 0' }}>
-                                {formatTS(sp.start_time)} {sp.status_code ? `• ${sp.status_code}` : ''}
-                              </div>
-                              {buildMessages(sp).map((m, idx) => (
-                                <div key={idx} className={`msg ${m.role}`}>
-                                  <div className="meta">{m.role}</div>
-                                  <div className="text">{m.text}</div>
-                                </div>
-                              ))}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
+                    {/* Conversation blade removed to keep UI compact; details shown via Selected Span section above */}
                   </>
                 )}
               </div>
@@ -688,6 +700,8 @@ function App() {
             onClose={navigateBack}
           />
         )}
+
+        {view === '404' && <NotFound />}
       </div>
     </div>
   )

@@ -32,6 +32,9 @@ type Span struct {
 	SpanID  string `json:"span_id"`
 	TraceID string `json:"trace_id"`
 
+	// Hierarchy
+	ParentSpanID string `json:"parent_span_id,omitempty"`
+
 	// Basic info
 	Name      string    `json:"name"`
 	StartTime time.Time `json:"start_time"`
@@ -85,6 +88,14 @@ type SpanAttribute struct {
 	JSONVal   *string // for array/object or fallback
 }
 
+// SpanLink represents a link between spans across traces
+type SpanLink struct {
+	SpanID        string
+	TraceID       string
+	LinkedTraceID string
+	LinkedSpanID  *string // optional
+}
+
 type Database interface {
 	CreateTrace(trace Trace) (string, error)
 	GetTraces() ([]Trace, error)
@@ -121,6 +132,16 @@ type Database interface {
 	DeleteSpansByConversationID(conversationID string) (int64, error)
 	DeleteSpanAttributesByConversationID(conversationID string) (int64, error)
 	DeleteConversationRow(conversationID string) (int64, error)
+	// Lookup conversation id associated with a given trace id, if any
+	LookupConversationIDByTraceID(traceID string) (string, error)
+	// Span links operations
+	BatchInsertSpanLinks(links []SpanLink) error
+	GetLinkedConversations(conversationID string) ([]string, error)
+	GetSubConversations(conversationID string) ([]string, error)
+	// BackfillDerived scans existing spans and derives st.model and st.category
+	// for spans missing these attributes. Returns number of spans updated and
+	// number of attribute rows upserted.
+	BackfillDerived(limit int) (int, int, error)
 	Close() error
 }
 
@@ -152,6 +173,7 @@ var conversationIDKeys = []string{
 	"session.id",
 	"chat.id",
 	"thread.id",
+	"gcp.vertex.agent.session_id",
 }
 
 // Build SQLite SQL expression to compute group_id from span_attributes, fallback to spans.trace_id.
@@ -268,6 +290,7 @@ func initSQLite(dbPath string) (*SQLiteDB, error) {
 	CREATE TABLE IF NOT EXISTS spans (
 		span_id TEXT NOT NULL,
 		trace_id TEXT NOT NULL,
+		parent_span_id TEXT,
 		name TEXT NOT NULL,
 		start_time DATETIME NOT NULL,
 		end_time DATETIME NOT NULL,
@@ -280,6 +303,7 @@ func initSQLite(dbPath string) (*SQLiteDB, error) {
 		UNIQUE (trace_id, span_id)
 	);
 	CREATE INDEX IF NOT EXISTS idx_spans_trace_id ON spans(trace_id);
+	CREATE INDEX IF NOT EXISTS idx_spans_parent_span_id ON spans(parent_span_id);
 	CREATE INDEX IF NOT EXISTS idx_spans_start_time_desc ON spans(start_time DESC, span_id DESC);
 	CREATE INDEX IF NOT EXISTS idx_spans_name ON spans(name);
 
@@ -298,6 +322,7 @@ func initSQLite(dbPath string) (*SQLiteDB, error) {
 	);
 	CREATE INDEX IF NOT EXISTS idx_span_attrs_trace_id ON span_attributes(trace_id);
 	CREATE INDEX IF NOT EXISTS idx_span_attrs_key ON span_attributes(key);
+	CREATE INDEX IF NOT EXISTS idx_span_attrs_key_string ON span_attributes(key, string_val);
 
 	-- Conversations table aggregates
 	CREATE TABLE IF NOT EXISTS conversations (
@@ -308,6 +333,17 @@ func initSQLite(dbPath string) (*SQLiteDB, error) {
 		model TEXT
 	);
 	CREATE INDEX IF NOT EXISTS idx_conversations_last_end_desc ON conversations(last_end_time DESC);
+
+	-- Span links table for cross-trace relationships
+	CREATE TABLE IF NOT EXISTS span_links (
+		span_id TEXT NOT NULL,
+		trace_id TEXT NOT NULL,
+		linked_trace_id TEXT NOT NULL,
+		linked_span_id TEXT,
+		PRIMARY KEY (span_id, linked_trace_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_span_links_trace_id ON span_links(trace_id);
+	CREATE INDEX IF NOT EXISTS idx_span_links_linked_trace_id ON span_links(linked_trace_id);
 	`
 
 	if _, err := db.Exec(schema); err != nil {
@@ -345,6 +381,7 @@ func initPostgres(connStr string) (*PostgresDB, error) {
 	CREATE TABLE IF NOT EXISTS spans (
 		span_id TEXT PRIMARY KEY,
 		trace_id TEXT NOT NULL,
+		parent_span_id TEXT,
 		name TEXT NOT NULL,
 		start_time TIMESTAMP NOT NULL,
 		end_time TIMESTAMP NOT NULL,
@@ -356,6 +393,7 @@ func initPostgres(connStr string) (*PostgresDB, error) {
 	);
 	CREATE UNIQUE INDEX IF NOT EXISTS idx_spans_trace_span ON spans(trace_id, span_id);
 	CREATE INDEX IF NOT EXISTS idx_spans_trace_id ON spans(trace_id);
+	CREATE INDEX IF NOT EXISTS idx_spans_parent_span_id ON spans(parent_span_id);
 	CREATE INDEX IF NOT EXISTS idx_spans_start_time_desc ON spans(start_time DESC, span_id DESC);
 	CREATE INDEX IF NOT EXISTS idx_spans_name ON spans(name);
 
@@ -373,6 +411,7 @@ func initPostgres(connStr string) (*PostgresDB, error) {
 	);
 	CREATE INDEX IF NOT EXISTS idx_span_attrs_trace_id ON span_attributes(trace_id);
 	CREATE INDEX IF NOT EXISTS idx_span_attrs_key ON span_attributes(key);
+	CREATE INDEX IF NOT EXISTS idx_span_attrs_key_string ON span_attributes(key, string_val);
 
 	CREATE TABLE IF NOT EXISTS conversations (
 		id TEXT PRIMARY KEY,
@@ -382,6 +421,16 @@ func initPostgres(connStr string) (*PostgresDB, error) {
 		model TEXT
 	);
 	CREATE INDEX IF NOT EXISTS idx_conversations_last_end_desc ON conversations(last_end_time DESC);
+
+	CREATE TABLE IF NOT EXISTS span_links (
+		span_id TEXT NOT NULL,
+		trace_id TEXT NOT NULL,
+		linked_trace_id TEXT NOT NULL,
+		linked_span_id TEXT,
+		PRIMARY KEY (span_id, linked_trace_id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_span_links_trace_id ON span_links(trace_id);
+	CREATE INDEX IF NOT EXISTS idx_span_links_linked_trace_id ON span_links(linked_trace_id);
 	`
 
 	if _, err := db.Exec(schema); err != nil {
@@ -485,8 +534,8 @@ func (s *SQLiteDB) BatchInsertSpans(spans []Span) error {
 	}
 	stmt, err := tx.Prepare(`
 		INSERT OR REPLACE INTO spans (
-			span_id, trace_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			span_id, trace_id, parent_span_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		tx.Rollback()
@@ -494,7 +543,7 @@ func (s *SQLiteDB) BatchInsertSpans(spans []Span) error {
 	}
 	defer stmt.Close()
 	for _, sp := range spans {
-		if _, err := stmt.Exec(sp.SpanID, sp.TraceID, sp.Name, sp.StartTime, sp.EndTime, sp.DurationMS, sp.StatusCode, sp.StatusDesc, sp.Attributes, sp.Events); err != nil {
+		if _, err := stmt.Exec(sp.SpanID, sp.TraceID, sp.ParentSpanID, sp.Name, sp.StartTime, sp.EndTime, sp.DurationMS, sp.StatusCode, sp.StatusDesc, sp.Attributes, sp.Events); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -510,14 +559,14 @@ func (s *SQLiteDB) GetSpans(limit int, before time.Time) ([]Span, error) {
 	var err error
 	if before.IsZero() {
 		rows, err = s.db.Query(`
-			SELECT span_id, trace_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
+			SELECT span_id, trace_id, parent_span_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
 			FROM spans
 			ORDER BY start_time DESC, span_id DESC
 			LIMIT ?
 		`, limit)
 	} else {
 		rows, err = s.db.Query(`
-			SELECT span_id, trace_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
+			SELECT span_id, trace_id, parent_span_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
 			FROM spans
 			WHERE start_time < ?
 			ORDER BY start_time DESC, span_id DESC
@@ -532,7 +581,7 @@ func (s *SQLiteDB) GetSpans(limit int, before time.Time) ([]Span, error) {
 	out := make([]Span, 0, limit)
 	for rows.Next() {
 		var sp Span
-		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
+		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.ParentSpanID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
 			return nil, err
 		}
 		out = append(out, sp)
@@ -656,6 +705,217 @@ func (s *SQLiteDB) DeleteConversationRow(conversationID string) (int64, error) {
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
+}
+
+func (s *SQLiteDB) LookupConversationIDByTraceID(traceID string) (string, error) {
+    var cid sql.NullString
+    err := s.db.QueryRow(`SELECT string_val FROM span_attributes WHERE trace_id = ? AND key = 'gen_ai.conversation.id' LIMIT 1`, traceID).Scan(&cid)
+    if err == sql.ErrNoRows {
+        return "", nil
+    }
+    if err != nil {
+        return "", err
+    }
+    if cid.Valid {
+        return cid.String, nil
+    }
+    return "", nil
+}
+
+func (s *SQLiteDB) BatchInsertSpanLinks(links []SpanLink) error {
+    if len(links) == 0 {
+        return nil
+    }
+    tx, err := s.db.Begin()
+    if err != nil {
+        return err
+    }
+    stmt, err := tx.Prepare(`INSERT OR IGNORE INTO span_links (span_id, trace_id, linked_trace_id, linked_span_id) VALUES (?, ?, ?, ?)`)
+    if err != nil {
+        tx.Rollback()
+        return err
+    }
+    defer stmt.Close()
+    for _, link := range links {
+        _, err := stmt.Exec(link.SpanID, link.TraceID, link.LinkedTraceID, link.LinkedSpanID)
+        if err != nil {
+            tx.Rollback()
+            return err
+        }
+    }
+    return tx.Commit()
+}
+
+func (s *SQLiteDB) GetLinkedConversations(conversationID string) ([]string, error) {
+    // Find conversations that the given conversation links TO
+    // by examining span_links and finding conversation IDs from any span in the linked traces
+    keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
+    q := `
+        SELECT DISTINCT sa.string_val AS linked_conv
+        FROM span_links sl
+        JOIN span_attributes sa ON sa.trace_id = sl.linked_trace_id
+        WHERE sa.key IN ` + keysList + `
+          AND sl.trace_id IN (
+              SELECT DISTINCT s.trace_id FROM spans s
+              JOIN span_attributes sa2 ON s.span_id = sa2.span_id
+              WHERE sa2.key IN ` + keysList + `
+                AND sa2.string_val = ?
+          )
+          AND sa.string_val != ?
+          AND sa.string_val IS NOT NULL
+    `
+    rows, err := s.db.Query(q, conversationID, conversationID)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+    var result []string
+    for rows.Next() {
+        var convID string
+        if err := rows.Scan(&convID); err != nil {
+            return nil, err
+        }
+        result = append(result, convID)
+    }
+    return result, nil
+}
+
+func (s *SQLiteDB) GetSubConversations(conversationID string) ([]string, error) {
+    // Find conversations that link TO the given conversation
+    // by examining span_links and finding conversation IDs from any span in the linking traces
+    keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
+    q := `
+        SELECT DISTINCT sa.string_val AS sub_conv
+        FROM span_links sl
+        JOIN span_attributes sa ON sa.trace_id = sl.trace_id
+        WHERE sa.key IN ` + keysList + `
+          AND sl.linked_trace_id IN (
+              SELECT DISTINCT s.trace_id FROM spans s
+              JOIN span_attributes sa2 ON s.span_id = sa2.span_id
+              WHERE sa2.key IN ` + keysList + `
+                AND sa2.string_val = ?
+          )
+          AND sa.string_val != ?
+          AND sa.string_val IS NOT NULL
+    `
+    rows, err := s.db.Query(q, conversationID, conversationID)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+    var result []string
+    for rows.Next() {
+        var convID string
+        if err := rows.Scan(&convID); err != nil {
+            return nil, err
+        }
+        result = append(result, convID)
+    }
+    return result, nil
+}// BackfillDerived computes and stores derived attributes (st.model, st.category) for existing spans.
+// It updates the spans.attributes JSON and upserts typed rows into span_attributes.
+func (s *SQLiteDB) BackfillDerived(limit int) (int, int, error) { // fmt: skip
+	if limit <= 0 || limit > 10000 {
+		limit = 2000
+	}
+	q := `
+		SELECT s.span_id, s.trace_id, s.name, COALESCE(s.attributes, '')
+		FROM spans s
+		LEFT JOIN span_attributes a1 ON a1.span_id = s.span_id AND a1.key = 'st.model'
+		LEFT JOIN span_attributes a2 ON a2.span_id = s.span_id AND a2.key = 'st.category'
+		WHERE a1.span_id IS NULL OR a2.span_id IS NULL
+		ORDER BY s.start_time DESC, s.span_id DESC
+		LIMIT ?
+	`
+	rows, err := s.db.Query(q, limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+
+	type rec struct {
+		spanID    string
+		traceID   string
+		name      string
+		attrJSON  string
+	}
+	candidates := make([]rec, 0, limit)
+	for rows.Next() {
+		var r rec
+		if err := rows.Scan(&r.spanID, &r.traceID, &r.name, &r.attrJSON); err != nil {
+			return 0, 0, err
+		}
+		candidates = append(candidates, r)
+	}
+	if len(candidates) == 0 {
+		return 0, 0, nil
+	}
+
+	// Prepare updates
+	updatedSpans := 0
+	var attrRows []SpanAttribute
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, 0, err
+	}
+	updStmt, err := tx.Prepare(`UPDATE spans SET attributes = ? WHERE span_id = ?`)
+	if err != nil {
+		tx.Rollback()
+		return 0, 0, err
+	}
+	defer updStmt.Close()
+
+	for _, r := range candidates {
+		// Parse attributes JSON (flattened map)
+		m := map[string]any{}
+		if strings.TrimSpace(r.attrJSON) != "" {
+			_ = json.Unmarshal([]byte(r.attrJSON), &m)
+		}
+		added := false
+		// st.model if missing
+		if _, ok := m["st.model"]; !ok {
+			model := extractModelFromAttrJSON(r.attrJSON)
+			if strings.TrimSpace(model) != "" && strings.ToLower(model) != "unknown" {
+				m["st.model"] = model
+				v := model
+				attrRows = append(attrRows, SpanAttribute{SpanID: r.spanID, TraceID: r.traceID, Key: "st.model", Type: "string", StringVal: &v})
+				added = true
+			}
+		}
+		// st.category if missing
+		if _, ok := m["st.category"]; !ok {
+			cat := detectCategory(r.name, m)
+			if strings.TrimSpace(cat) == "" {
+				cat = "other"
+			}
+			m["st.category"] = cat
+			v := cat
+			attrRows = append(attrRows, SpanAttribute{SpanID: r.spanID, TraceID: r.traceID, Key: "st.category", Type: "string", StringVal: &v})
+			added = true
+		}
+		if added {
+			// Update spans.attributes
+			b, _ := json.Marshal(m)
+			if _, err := updStmt.Exec(string(b), r.spanID); err != nil {
+				tx.Rollback()
+				return 0, 0, err
+			}
+			updatedSpans++
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	// Upsert typed attributes
+	upserts := 0
+	if len(attrRows) > 0 {
+		if err := s.BatchUpsertSpanAttributes(attrRows); err != nil {
+			return updatedSpans, 0, err
+		}
+		upserts = len(attrRows)
+	}
+	return updatedSpans, upserts, nil
 }
 
 // BatchUpsertConversations aggregates and upserts conversations
@@ -913,7 +1173,7 @@ func (s *SQLiteDB) GetTraceGroupSpansWithSearch(traceID string, limit int, searc
 	pattern := "%" + strings.ToLower(strings.TrimSpace(search)) + "%"
 	gid := sqliteGroupIDExpr()
 	q := `
-			SELECT span_id, trace_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
+			SELECT span_id, trace_id, parent_span_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
 			FROM spans s
 			WHERE ` + gid + ` = ? AND (
 			lower(name) LIKE ? OR lower(span_id) LIKE ? OR lower(coalesce(status_code, '')) LIKE ? OR
@@ -930,7 +1190,7 @@ func (s *SQLiteDB) GetTraceGroupSpansWithSearch(traceID string, limit int, searc
 	out := make([]Span, 0, limit)
 	for rows.Next() {
 		var sp Span
-		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
+		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.ParentSpanID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
 			return nil, err
 		}
 		out = append(out, sp)
@@ -969,7 +1229,7 @@ func (s *SQLiteDB) GetTraceGroupSpans(traceID string, limit int) ([]Span, error)
 	}
 	gid := sqliteGroupIDExpr()
 	q := `
-		SELECT span_id, trace_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
+		SELECT span_id, trace_id, parent_span_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
 		FROM spans s
 		WHERE ` + gid + ` = ?
 		ORDER BY start_time ASC, span_id ASC
@@ -983,7 +1243,7 @@ func (s *SQLiteDB) GetTraceGroupSpans(traceID string, limit int) ([]Span, error)
 	out := make([]Span, 0, limit)
 	for rows.Next() {
 		var sp Span
-		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
+		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.ParentSpanID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
 			return nil, err
 		}
 		out = append(out, sp)
@@ -1082,10 +1342,11 @@ func (p *PostgresDB) BatchInsertSpans(spans []Span) error {
 	}
 	stmt, err := tx.Prepare(`
 		INSERT INTO spans (
-			span_id, trace_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			span_id, trace_id, parent_span_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (span_id) DO UPDATE SET
 			trace_id = EXCLUDED.trace_id,
+			parent_span_id = EXCLUDED.parent_span_id,
 			name = EXCLUDED.name,
 			start_time = EXCLUDED.start_time,
 			end_time = EXCLUDED.end_time,
@@ -1101,7 +1362,7 @@ func (p *PostgresDB) BatchInsertSpans(spans []Span) error {
 	}
 	defer stmt.Close()
 	for _, sp := range spans {
-		if _, err := stmt.Exec(sp.SpanID, sp.TraceID, sp.Name, sp.StartTime, sp.EndTime, sp.DurationMS, sp.StatusCode, sp.StatusDesc, sp.Attributes, sp.Events); err != nil {
+		if _, err := stmt.Exec(sp.SpanID, sp.TraceID, sp.ParentSpanID, sp.Name, sp.StartTime, sp.EndTime, sp.DurationMS, sp.StatusCode, sp.StatusDesc, sp.Attributes, sp.Events); err != nil {
 			tx.Rollback()
 			return err
 		}
@@ -1117,14 +1378,14 @@ func (p *PostgresDB) GetSpans(limit int, before time.Time) ([]Span, error) {
 	var err error
 	if before.IsZero() {
 		rows, err = p.db.Query(`
-			SELECT span_id, trace_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
+			SELECT span_id, trace_id, parent_span_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
 			FROM spans
 			ORDER BY start_time DESC, span_id DESC
 			LIMIT $1
 		`, limit)
 	} else {
 		rows, err = p.db.Query(`
-			SELECT span_id, trace_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
+			SELECT span_id, trace_id, parent_span_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
 			FROM spans
 			WHERE start_time < $1
 			ORDER BY start_time DESC, span_id DESC
@@ -1139,7 +1400,7 @@ func (p *PostgresDB) GetSpans(limit int, before time.Time) ([]Span, error) {
 	out := make([]Span, 0, limit)
 	for rows.Next() {
 		var sp Span
-		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
+		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.ParentSpanID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
 			return nil, err
 		}
 		out = append(out, sp)
@@ -1259,6 +1520,188 @@ func (p *PostgresDB) DeleteConversationRow(conversationID string) (int64, error)
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
+}
+
+func (p *PostgresDB) LookupConversationIDByTraceID(traceID string) (string, error) {
+    var cid sql.NullString
+    err := p.db.QueryRow(`SELECT string_val FROM span_attributes WHERE trace_id = $1 AND key = 'gen_ai.conversation.id' LIMIT 1`, traceID).Scan(&cid)
+    if err == sql.ErrNoRows {
+        return "", nil
+    }
+    if err != nil {
+        return "", err
+    }
+    if cid.Valid {
+        return cid.String, nil
+    }
+    return "", nil
+}
+
+func (p *PostgresDB) BatchInsertSpanLinks(links []SpanLink) error {
+    if len(links) == 0 {
+        return nil
+    }
+    tx, err := p.db.Begin()
+    if err != nil {
+        return err
+    }
+    stmt, err := tx.Prepare(`INSERT INTO span_links (span_id, trace_id, linked_trace_id, linked_span_id) VALUES ($1, $2, $3, $4) ON CONFLICT (span_id, linked_trace_id) DO NOTHING`)
+    if err != nil {
+        tx.Rollback()
+        return err
+    }
+    defer stmt.Close()
+    for _, link := range links {
+        _, err := stmt.Exec(link.SpanID, link.TraceID, link.LinkedTraceID, link.LinkedSpanID)
+        if err != nil {
+            tx.Rollback()
+            return err
+        }
+    }
+    return tx.Commit()
+}
+
+func (p *PostgresDB) GetLinkedConversations(conversationID string) ([]string, error) {
+    keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
+    q := `
+        SELECT DISTINCT sa.string_val AS linked_conv
+        FROM span_links sl
+        JOIN span_attributes sa ON sa.trace_id = sl.linked_trace_id
+        WHERE sa.key IN ` + keysList + `
+          AND sl.trace_id IN (
+              SELECT DISTINCT s.trace_id FROM spans s
+              JOIN span_attributes sa2 ON s.span_id = sa2.span_id
+              WHERE sa2.key IN ` + keysList + `
+                AND sa2.string_val = $1
+          )
+          AND sa.string_val != $1
+          AND sa.string_val IS NOT NULL
+    `
+    rows, err := p.db.Query(q, conversationID)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+    var result []string
+    for rows.Next() {
+        var convID string
+        if err := rows.Scan(&convID); err != nil {
+            return nil, err
+        }
+        result = append(result, convID)
+    }
+    return result, nil
+}
+
+func (p *PostgresDB) GetSubConversations(conversationID string) ([]string, error) {
+    keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
+    q := `
+        SELECT DISTINCT sa.string_val AS sub_conv
+        FROM span_links sl
+        JOIN span_attributes sa ON sa.trace_id = sl.trace_id
+        WHERE sa.key IN ` + keysList + `
+          AND sl.linked_trace_id IN (
+              SELECT DISTINCT s.trace_id FROM spans s
+              JOIN span_attributes sa2 ON s.span_id = sa2.span_id
+              WHERE sa2.key IN ` + keysList + `
+                AND sa2.string_val = $1
+          )
+          AND sa.string_val != $1
+          AND sa.string_val IS NOT NULL
+    `
+    rows, err := p.db.Query(q, conversationID)
+    if err != nil {
+        return nil, err
+    }
+    defer rows.Close()
+    var result []string
+    for rows.Next() {
+        var convID string
+        if err := rows.Scan(&convID); err != nil {
+            return nil, err
+        }
+        result = append(result, convID)
+    }
+    return result, nil
+}// BackfillDerived for Postgres implementation
+func (p *PostgresDB) BackfillDerived(limit int) (int, int, error) { // fmt: skip
+	if limit <= 0 || limit > 10000 {
+		limit = 2000
+	}
+	q := `
+		SELECT s.span_id, s.trace_id, s.name, COALESCE(s.attributes, '')
+		FROM spans s
+		LEFT JOIN span_attributes a1 ON a1.span_id = s.span_id AND a1.key = 'st.model'
+		LEFT JOIN span_attributes a2 ON a2.span_id = s.span_id AND a2.key = 'st.category'
+		WHERE a1.span_id IS NULL OR a2.span_id IS NULL
+		ORDER BY s.start_time DESC, s.span_id DESC
+		LIMIT $1
+	`
+	rows, err := p.db.Query(q, limit)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	type rec struct{
+		spanID string
+		traceID string
+		name string
+		attrJSON string
+	}
+	var candidates []rec
+	for rows.Next() {
+		var r rec
+		if err := rows.Scan(&r.spanID, &r.traceID, &r.name, &r.attrJSON); err != nil {
+			return 0, 0, err
+		}
+		candidates = append(candidates, r)
+	}
+	if len(candidates) == 0 {
+		return 0, 0, nil
+	}
+
+	updatedSpans := 0
+	var attrRows []SpanAttribute
+	tx, err := p.db.Begin()
+	if err != nil { return 0, 0, err }
+	updStmt, err := tx.Prepare(`UPDATE spans SET attributes = $1 WHERE span_id = $2`)
+	if err != nil { tx.Rollback(); return 0, 0, err }
+	defer updStmt.Close()
+
+	for _, r := range candidates {
+		m := map[string]any{}
+		if strings.TrimSpace(r.attrJSON) != "" { _ = json.Unmarshal([]byte(r.attrJSON), &m) }
+		added := false
+		if _, ok := m["st.model"]; !ok {
+			model := extractModelFromAttrJSON(r.attrJSON)
+			if strings.TrimSpace(model) != "" && strings.ToLower(model) != "unknown" {
+				m["st.model"] = model
+				v := model
+				attrRows = append(attrRows, SpanAttribute{SpanID: r.spanID, TraceID: r.traceID, Key: "st.model", Type: "string", StringVal: &v})
+				added = true
+			}
+		}
+		if _, ok := m["st.category"]; !ok {
+			cat := detectCategory(r.name, m)
+			if strings.TrimSpace(cat) == "" { cat = "other" }
+			m["st.category"] = cat
+			v := cat
+			attrRows = append(attrRows, SpanAttribute{SpanID: r.spanID, TraceID: r.traceID, Key: "st.category", Type: "string", StringVal: &v})
+			added = true
+		}
+		if added {
+			b, _ := json.Marshal(m)
+			if _, err := updStmt.Exec(string(b), r.spanID); err != nil { tx.Rollback(); return 0, 0, err }
+			updatedSpans++
+		}
+	}
+	if err := tx.Commit(); err != nil { return 0, 0, err }
+	upserts := 0
+	if len(attrRows) > 0 {
+		if err := p.BatchUpsertSpanAttributes(attrRows); err != nil { return updatedSpans, 0, err }
+		upserts = len(attrRows)
+	}
+	return updatedSpans, upserts, nil
 }
 
 func (p *PostgresDB) BatchUpsertConversations(updates []ConversationUpdate) error {
@@ -1573,7 +2016,7 @@ func (p *PostgresDB) GetTraceGroupSpansWithSearch(traceID string, limit int, sea
 	pattern := "%" + strings.TrimSpace(search) + "%"
 	gid := pgGroupIDExpr()
 	q := `
-			SELECT span_id, trace_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
+			SELECT span_id, trace_id, parent_span_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
 			FROM spans s
 			WHERE ` + gid + ` = $1 AND (
 			name ILIKE $2 OR span_id ILIKE $2 OR coalesce(status_code, '') ILIKE $2 OR
@@ -1590,7 +2033,7 @@ func (p *PostgresDB) GetTraceGroupSpansWithSearch(traceID string, limit int, sea
 	out := make([]Span, 0, limit)
 	for rows.Next() {
 		var sp Span
-		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
+		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.ParentSpanID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
 			return nil, err
 		}
 		out = append(out, sp)
@@ -1604,7 +2047,7 @@ func (p *PostgresDB) GetTraceGroupSpans(traceID string, limit int) ([]Span, erro
 	}
 	gid := pgGroupIDExpr()
 	q := `
-		SELECT span_id, trace_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
+		SELECT span_id, trace_id, parent_span_id, name, start_time, end_time, duration_ms, status_code, status_description, attributes, events
 		FROM spans s
 		WHERE ` + gid + ` = $1
 		ORDER BY start_time ASC, span_id ASC
@@ -1618,7 +2061,7 @@ func (p *PostgresDB) GetTraceGroupSpans(traceID string, limit int) ([]Span, erro
 	out := make([]Span, 0, limit)
 	for rows.Next() {
 		var sp Span
-		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
+		if err := rows.Scan(&sp.SpanID, &sp.TraceID, &sp.ParentSpanID, &sp.Name, &sp.StartTime, &sp.EndTime, &sp.DurationMS, &sp.StatusCode, &sp.StatusDesc, &sp.Attributes, &sp.Events); err != nil {
 			return nil, err
 		}
 		out = append(out, sp)
@@ -1634,12 +2077,34 @@ func extractModelFromAttrJSON(attrJSON string) string {
 	if err := json.Unmarshal([]byte(attrJSON), &m); err != nil {
 		return ""
 	}
+	// Prefer derived normalized model if present
+	if v, ok := m["st.model"]; ok {
+		return fmt.Sprintf("%v", v)
+	}
 	keys := []string{
 		"llm.model", "gen_ai.request.model", "resource.service.name", "agent.model",
+		"openai.model", "anthropic.model", "ai.model", "model",
 	}
 	for _, k := range keys {
 		if v, ok := m[k]; ok {
 			return fmt.Sprintf("%v", v)
+		}
+	}
+	// Try to parse embedded JSON strings that may contain a model field
+	embeddedKeys := []string{
+		"gcp.vertex.agent.llm_request", "gcp.vertex.agent.llm_response",
+		"gen_ai.request", "gen_ai.response", "llm.request", "llm.response",
+	}
+	for _, k := range embeddedKeys {
+		if raw, ok := m[k]; ok {
+			if s, ok := raw.(string); ok {
+				var sub anyMap
+				if err := json.Unmarshal([]byte(s), &sub); err == nil {
+					if mv, ok := sub["model"]; ok {
+						return fmt.Sprintf("%v", mv)
+					}
+				}
+			}
 		}
 	}
 	return ""
