@@ -708,49 +708,49 @@ func (s *SQLiteDB) DeleteConversationRow(conversationID string) (int64, error) {
 }
 
 func (s *SQLiteDB) LookupConversationIDByTraceID(traceID string) (string, error) {
-    var cid sql.NullString
-    err := s.db.QueryRow(`SELECT string_val FROM span_attributes WHERE trace_id = ? AND key = 'gen_ai.conversation.id' LIMIT 1`, traceID).Scan(&cid)
-    if err == sql.ErrNoRows {
-        return "", nil
-    }
-    if err != nil {
-        return "", err
-    }
-    if cid.Valid {
-        return cid.String, nil
-    }
-    return "", nil
+	var cid sql.NullString
+	err := s.db.QueryRow(`SELECT string_val FROM span_attributes WHERE trace_id = ? AND key = 'gen_ai.conversation.id' LIMIT 1`, traceID).Scan(&cid)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if cid.Valid {
+		return cid.String, nil
+	}
+	return "", nil
 }
 
 func (s *SQLiteDB) BatchInsertSpanLinks(links []SpanLink) error {
-    if len(links) == 0 {
-        return nil
-    }
-    tx, err := s.db.Begin()
-    if err != nil {
-        return err
-    }
-    stmt, err := tx.Prepare(`INSERT OR IGNORE INTO span_links (span_id, trace_id, linked_trace_id, linked_span_id) VALUES (?, ?, ?, ?)`)
-    if err != nil {
-        tx.Rollback()
-        return err
-    }
-    defer stmt.Close()
-    for _, link := range links {
-        _, err := stmt.Exec(link.SpanID, link.TraceID, link.LinkedTraceID, link.LinkedSpanID)
-        if err != nil {
-            tx.Rollback()
-            return err
-        }
-    }
-    return tx.Commit()
+	if len(links) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO span_links (span_id, trace_id, linked_trace_id, linked_span_id) VALUES (?, ?, ?, ?)`)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for _, link := range links {
+		_, err := stmt.Exec(link.SpanID, link.TraceID, link.LinkedTraceID, link.LinkedSpanID)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteDB) GetLinkedConversations(conversationID string) ([]string, error) {
-    // Find conversations that the given conversation links TO
-    // by examining span_links and finding conversation IDs from any span in the linked traces
-    keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
-    q := `
+	// Find conversations that the given conversation links TO
+	// by examining span_links and finding conversation IDs from any span in the linked traces
+	keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
+	q := `
         SELECT DISTINCT sa.string_val AS linked_conv
         FROM span_links sl
         JOIN span_attributes sa ON sa.trace_id = sl.linked_trace_id
@@ -764,27 +764,27 @@ func (s *SQLiteDB) GetLinkedConversations(conversationID string) ([]string, erro
           AND sa.string_val != ?
           AND sa.string_val IS NOT NULL
     `
-    rows, err := s.db.Query(q, conversationID, conversationID)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-    var result []string
-    for rows.Next() {
-        var convID string
-        if err := rows.Scan(&convID); err != nil {
-            return nil, err
-        }
-        result = append(result, convID)
-    }
-    return result, nil
+	rows, err := s.db.Query(q, conversationID, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []string
+	for rows.Next() {
+		var convID string
+		if err := rows.Scan(&convID); err != nil {
+			return nil, err
+		}
+		result = append(result, convID)
+	}
+	return result, nil
 }
 
 func (s *SQLiteDB) GetSubConversations(conversationID string) ([]string, error) {
-    // Find conversations that link TO the given conversation
-    // by examining span_links and finding conversation IDs from any span in the linking traces
-    keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
-    q := `
+	// Find conversations that link TO the given conversation
+	// by examining span_links and finding conversation IDs from any span in the linking traces
+	keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
+	q := `
         SELECT DISTINCT sa.string_val AS sub_conv
         FROM span_links sl
         JOIN span_attributes sa ON sa.trace_id = sl.trace_id
@@ -798,21 +798,21 @@ func (s *SQLiteDB) GetSubConversations(conversationID string) ([]string, error) 
           AND sa.string_val != ?
           AND sa.string_val IS NOT NULL
     `
-    rows, err := s.db.Query(q, conversationID, conversationID)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-    var result []string
-    for rows.Next() {
-        var convID string
-        if err := rows.Scan(&convID); err != nil {
-            return nil, err
-        }
-        result = append(result, convID)
-    }
-    return result, nil
-}// BackfillDerived computes and stores derived attributes (st.model, st.category) for existing spans.
+	rows, err := s.db.Query(q, conversationID, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []string
+	for rows.Next() {
+		var convID string
+		if err := rows.Scan(&convID); err != nil {
+			return nil, err
+		}
+		result = append(result, convID)
+	}
+	return result, nil
+} // BackfillDerived computes and stores derived attributes (st.model, st.category) for existing spans.
 // It updates the spans.attributes JSON and upserts typed rows into span_attributes.
 func (s *SQLiteDB) BackfillDerived(limit int) (int, int, error) { // fmt: skip
 	if limit <= 0 || limit > 10000 {
@@ -834,10 +834,10 @@ func (s *SQLiteDB) BackfillDerived(limit int) (int, int, error) { // fmt: skip
 	defer rows.Close()
 
 	type rec struct {
-		spanID    string
-		traceID   string
-		name      string
-		attrJSON  string
+		spanID   string
+		traceID  string
+		name     string
+		attrJSON string
 	}
 	candidates := make([]rec, 0, limit)
 	for rows.Next() {
@@ -1523,47 +1523,47 @@ func (p *PostgresDB) DeleteConversationRow(conversationID string) (int64, error)
 }
 
 func (p *PostgresDB) LookupConversationIDByTraceID(traceID string) (string, error) {
-    var cid sql.NullString
-    err := p.db.QueryRow(`SELECT string_val FROM span_attributes WHERE trace_id = $1 AND key = 'gen_ai.conversation.id' LIMIT 1`, traceID).Scan(&cid)
-    if err == sql.ErrNoRows {
-        return "", nil
-    }
-    if err != nil {
-        return "", err
-    }
-    if cid.Valid {
-        return cid.String, nil
-    }
-    return "", nil
+	var cid sql.NullString
+	err := p.db.QueryRow(`SELECT string_val FROM span_attributes WHERE trace_id = $1 AND key = 'gen_ai.conversation.id' LIMIT 1`, traceID).Scan(&cid)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if cid.Valid {
+		return cid.String, nil
+	}
+	return "", nil
 }
 
 func (p *PostgresDB) BatchInsertSpanLinks(links []SpanLink) error {
-    if len(links) == 0 {
-        return nil
-    }
-    tx, err := p.db.Begin()
-    if err != nil {
-        return err
-    }
-    stmt, err := tx.Prepare(`INSERT INTO span_links (span_id, trace_id, linked_trace_id, linked_span_id) VALUES ($1, $2, $3, $4) ON CONFLICT (span_id, linked_trace_id) DO NOTHING`)
-    if err != nil {
-        tx.Rollback()
-        return err
-    }
-    defer stmt.Close()
-    for _, link := range links {
-        _, err := stmt.Exec(link.SpanID, link.TraceID, link.LinkedTraceID, link.LinkedSpanID)
-        if err != nil {
-            tx.Rollback()
-            return err
-        }
-    }
-    return tx.Commit()
+	if len(links) == 0 {
+		return nil
+	}
+	tx, err := p.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO span_links (span_id, trace_id, linked_trace_id, linked_span_id) VALUES ($1, $2, $3, $4) ON CONFLICT (span_id, linked_trace_id) DO NOTHING`)
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for _, link := range links {
+		_, err := stmt.Exec(link.SpanID, link.TraceID, link.LinkedTraceID, link.LinkedSpanID)
+		if err != nil {
+			tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (p *PostgresDB) GetLinkedConversations(conversationID string) ([]string, error) {
-    keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
-    q := `
+	keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
+	q := `
         SELECT DISTINCT sa.string_val AS linked_conv
         FROM span_links sl
         JOIN span_attributes sa ON sa.trace_id = sl.linked_trace_id
@@ -1577,25 +1577,25 @@ func (p *PostgresDB) GetLinkedConversations(conversationID string) ([]string, er
           AND sa.string_val != $1
           AND sa.string_val IS NOT NULL
     `
-    rows, err := p.db.Query(q, conversationID)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-    var result []string
-    for rows.Next() {
-        var convID string
-        if err := rows.Scan(&convID); err != nil {
-            return nil, err
-        }
-        result = append(result, convID)
-    }
-    return result, nil
+	rows, err := p.db.Query(q, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []string
+	for rows.Next() {
+		var convID string
+		if err := rows.Scan(&convID); err != nil {
+			return nil, err
+		}
+		result = append(result, convID)
+	}
+	return result, nil
 }
 
 func (p *PostgresDB) GetSubConversations(conversationID string) ([]string, error) {
-    keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
-    q := `
+	keysList := "('" + strings.Join(conversationIDKeys, "','") + "')"
+	q := `
         SELECT DISTINCT sa.string_val AS sub_conv
         FROM span_links sl
         JOIN span_attributes sa ON sa.trace_id = sl.trace_id
@@ -1609,21 +1609,21 @@ func (p *PostgresDB) GetSubConversations(conversationID string) ([]string, error
           AND sa.string_val != $1
           AND sa.string_val IS NOT NULL
     `
-    rows, err := p.db.Query(q, conversationID)
-    if err != nil {
-        return nil, err
-    }
-    defer rows.Close()
-    var result []string
-    for rows.Next() {
-        var convID string
-        if err := rows.Scan(&convID); err != nil {
-            return nil, err
-        }
-        result = append(result, convID)
-    }
-    return result, nil
-}// BackfillDerived for Postgres implementation
+	rows, err := p.db.Query(q, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []string
+	for rows.Next() {
+		var convID string
+		if err := rows.Scan(&convID); err != nil {
+			return nil, err
+		}
+		result = append(result, convID)
+	}
+	return result, nil
+} // BackfillDerived for Postgres implementation
 func (p *PostgresDB) BackfillDerived(limit int) (int, int, error) { // fmt: skip
 	if limit <= 0 || limit > 10000 {
 		limit = 2000
@@ -1642,10 +1642,10 @@ func (p *PostgresDB) BackfillDerived(limit int) (int, int, error) { // fmt: skip
 		return 0, 0, err
 	}
 	defer rows.Close()
-	type rec struct{
-		spanID string
-		traceID string
-		name string
+	type rec struct {
+		spanID   string
+		traceID  string
+		name     string
 		attrJSON string
 	}
 	var candidates []rec
@@ -1663,14 +1663,21 @@ func (p *PostgresDB) BackfillDerived(limit int) (int, int, error) { // fmt: skip
 	updatedSpans := 0
 	var attrRows []SpanAttribute
 	tx, err := p.db.Begin()
-	if err != nil { return 0, 0, err }
+	if err != nil {
+		return 0, 0, err
+	}
 	updStmt, err := tx.Prepare(`UPDATE spans SET attributes = $1 WHERE span_id = $2`)
-	if err != nil { tx.Rollback(); return 0, 0, err }
+	if err != nil {
+		tx.Rollback()
+		return 0, 0, err
+	}
 	defer updStmt.Close()
 
 	for _, r := range candidates {
 		m := map[string]any{}
-		if strings.TrimSpace(r.attrJSON) != "" { _ = json.Unmarshal([]byte(r.attrJSON), &m) }
+		if strings.TrimSpace(r.attrJSON) != "" {
+			_ = json.Unmarshal([]byte(r.attrJSON), &m)
+		}
 		added := false
 		if _, ok := m["st.model"]; !ok {
 			model := extractModelFromAttrJSON(r.attrJSON)
@@ -1683,7 +1690,9 @@ func (p *PostgresDB) BackfillDerived(limit int) (int, int, error) { // fmt: skip
 		}
 		if _, ok := m["st.category"]; !ok {
 			cat := detectCategory(r.name, m)
-			if strings.TrimSpace(cat) == "" { cat = "other" }
+			if strings.TrimSpace(cat) == "" {
+				cat = "other"
+			}
 			m["st.category"] = cat
 			v := cat
 			attrRows = append(attrRows, SpanAttribute{SpanID: r.spanID, TraceID: r.traceID, Key: "st.category", Type: "string", StringVal: &v})
@@ -1691,14 +1700,21 @@ func (p *PostgresDB) BackfillDerived(limit int) (int, int, error) { // fmt: skip
 		}
 		if added {
 			b, _ := json.Marshal(m)
-			if _, err := updStmt.Exec(string(b), r.spanID); err != nil { tx.Rollback(); return 0, 0, err }
+			if _, err := updStmt.Exec(string(b), r.spanID); err != nil {
+				tx.Rollback()
+				return 0, 0, err
+			}
 			updatedSpans++
 		}
 	}
-	if err := tx.Commit(); err != nil { return 0, 0, err }
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
 	upserts := 0
 	if len(attrRows) > 0 {
-		if err := p.BatchUpsertSpanAttributes(attrRows); err != nil { return updatedSpans, 0, err }
+		if err := p.BatchUpsertSpanAttributes(attrRows); err != nil {
+			return updatedSpans, 0, err
+		}
 		upserts = len(attrRows)
 	}
 	return updatedSpans, upserts, nil

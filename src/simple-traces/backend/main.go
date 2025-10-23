@@ -862,8 +862,8 @@ func backfillDerivedHandler(db Database, logger *Logger) http.HandlerFunc {
 		logger.Info("Backfill completed: spansUpdated=%d attrUpserts=%d", updated, upserts)
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"ok":               true,
-			"spans_updated":    updated,
+			"ok":                true,
+			"spans_updated":     updated,
 			"attributes_upsert": upserts,
 		})
 	}

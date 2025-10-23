@@ -66,107 +66,107 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Collect spans for batch insert for efficiency
 	var spanRows []Span
 	var attrRows []SpanAttribute
-    // collect conversation aggregates for batch upsert
-    convAgg := make(map[string]*ConversationUpdate)
-    // collect span links
-    var spanLinks []SpanLink
-    for _, rs := range req.ResourceSpans {
-        for _, ss := range rs.ScopeSpans {
-            for _, span := range ss.Spans {
-                // Create trace entry and span row
-                traceEntry, spanRow, spanAttrs := h.transformSpan(span, rs.Resource)
-                // Store trace for frontend compatibility
-                if _, err := h.db.CreateTrace(traceEntry); err != nil {
-                    h.logger.Error("Failed to store trace from OTLP span: %v", err)
-                }
-                spanRows = append(spanRows, spanRow)
-                attrRows = append(attrRows, spanAttrs...)
-                spansProcessed++
+	// collect conversation aggregates for batch upsert
+	convAgg := make(map[string]*ConversationUpdate)
+	// collect span links
+	var spanLinks []SpanLink
+	for _, rs := range req.ResourceSpans {
+		for _, ss := range rs.ScopeSpans {
+			for _, span := range ss.Spans {
+				// Create trace entry and span row
+				traceEntry, spanRow, spanAttrs := h.transformSpan(span, rs.Resource)
+				// Store trace for frontend compatibility
+				if _, err := h.db.CreateTrace(traceEntry); err != nil {
+					h.logger.Error("Failed to store trace from OTLP span: %v", err)
+				}
+				spanRows = append(spanRows, spanRow)
+				attrRows = append(attrRows, spanAttrs...)
+				spansProcessed++
 
-                // derive conversation id
-                convID := deriveConversationID(spanAttrs)
-                if convID != "" {
-                    cu := convAgg[convID]
-                    start := spanRow.StartTime
-                    end := spanRow.EndTime
-                    // try model from traceEntry
-                    model := traceEntry.Model
-                    if cu == nil {
-                        convAgg[convID] = &ConversationUpdate{ID: convID, Start: start, End: end, Count: 1, Model: model}
-                    } else {
-                        if start.Before(cu.Start) {
-                            cu.Start = start
-                        }
-                        if end.After(cu.End) {
-                            cu.End = end
-                        }
-                        cu.Count += 1
-                        if strings.TrimSpace(cu.Model) == "" && strings.TrimSpace(model) != "" {
-                            cu.Model = model
-                        }
-                    }
-                }
+				// derive conversation id
+				convID := deriveConversationID(spanAttrs)
+				if convID != "" {
+					cu := convAgg[convID]
+					start := spanRow.StartTime
+					end := spanRow.EndTime
+					// try model from traceEntry
+					model := traceEntry.Model
+					if cu == nil {
+						convAgg[convID] = &ConversationUpdate{ID: convID, Start: start, End: end, Count: 1, Model: model}
+					} else {
+						if start.Before(cu.Start) {
+							cu.Start = start
+						}
+						if end.After(cu.End) {
+							cu.End = end
+						}
+						cu.Count += 1
+						if strings.TrimSpace(cu.Model) == "" && strings.TrimSpace(model) != "" {
+							cu.Model = model
+						}
+					}
+				}
 
-                // collect span links (link to other traces)
-                if len(span.Links) > 0 {
-                    for _, l := range span.Links {
-                        if l == nil || len(l.TraceId) == 0 {
-                            continue
-                        }
-                        linkedTrace := fmt.Sprintf("%x", l.TraceId)
-                        if linkedTrace == "" {
-                            continue
-                        }
-                        var linkedSpanID *string
-                        if len(l.SpanId) > 0 {
-                            spanIDStr := fmt.Sprintf("%x", l.SpanId)
-                            linkedSpanID = &spanIDStr
-                        }
-                        spanLinks = append(spanLinks, SpanLink{
-                            SpanID:        spanRow.SpanID,
-                            TraceID:       spanRow.TraceID,
-                            LinkedTraceID: linkedTrace,
-                            LinkedSpanID:  linkedSpanID,
-                        })
-                    }
-                }
-            }
-        }
-    }    // Batch insert spans
-    if err := h.db.BatchInsertSpans(spanRows); err != nil {
-        h.logger.Error("Failed to batch insert %d spans: %v", len(spanRows), err)
-    }
-    if err := h.db.BatchUpsertSpanAttributes(attrRows); err != nil {
-        h.logger.Error("Failed to upsert %d span attributes: %v", len(attrRows), err)
-    }
+				// collect span links (link to other traces)
+				if len(span.Links) > 0 {
+					for _, l := range span.Links {
+						if l == nil || len(l.TraceId) == 0 {
+							continue
+						}
+						linkedTrace := fmt.Sprintf("%x", l.TraceId)
+						if linkedTrace == "" {
+							continue
+						}
+						var linkedSpanID *string
+						if len(l.SpanId) > 0 {
+							spanIDStr := fmt.Sprintf("%x", l.SpanId)
+							linkedSpanID = &spanIDStr
+						}
+						spanLinks = append(spanLinks, SpanLink{
+							SpanID:        spanRow.SpanID,
+							TraceID:       spanRow.TraceID,
+							LinkedTraceID: linkedTrace,
+							LinkedSpanID:  linkedSpanID,
+						})
+					}
+				}
+			}
+		}
+	} // Batch insert spans
+	if err := h.db.BatchInsertSpans(spanRows); err != nil {
+		h.logger.Error("Failed to batch insert %d spans: %v", len(spanRows), err)
+	}
+	if err := h.db.BatchUpsertSpanAttributes(attrRows); err != nil {
+		h.logger.Error("Failed to upsert %d span attributes: %v", len(attrRows), err)
+	}
 
-    // Store span links
-    if len(spanLinks) > 0 {
-        if err := h.db.BatchInsertSpanLinks(spanLinks); err != nil {
-            h.logger.Error("Failed to insert %d span links: %v", len(spanLinks), err)
-        }
-    }
+	// Store span links
+	if len(spanLinks) > 0 {
+		if err := h.db.BatchInsertSpanLinks(spanLinks); err != nil {
+			h.logger.Error("Failed to insert %d span links: %v", len(spanLinks), err)
+		}
+	}
 
-    // upsert conversations
-    if len(convAgg) > 0 {
-        updates := make([]ConversationUpdate, 0, len(convAgg))
-        for cid, v := range convAgg {
-            updates = append(updates, *v)
-            // also propagate this conversation id to all spans that share the same trace id if missing
-            // we use the span trace_id as fallback linkage: update after inserts
-            for _, sp := range spanRows {
-                // propagate for spans that occurred in this batch with the same conversation id found
-                // Note: deriveConversationID used attributes only; here we ensure every span under the same OTLP trace
-                // gets the conv id if not already present.
-                _, _ = h.db.PropagateConversationID(sp.TraceID, cid)
-            }
-        }
-        if err := h.db.BatchUpsertConversations(updates); err != nil {
-            h.logger.Error("Failed to upsert conversations: %v", err)
-        }
-    }
+	// upsert conversations
+	if len(convAgg) > 0 {
+		updates := make([]ConversationUpdate, 0, len(convAgg))
+		for cid, v := range convAgg {
+			updates = append(updates, *v)
+			// also propagate this conversation id to all spans that share the same trace id if missing
+			// we use the span trace_id as fallback linkage: update after inserts
+			for _, sp := range spanRows {
+				// propagate for spans that occurred in this batch with the same conversation id found
+				// Note: deriveConversationID used attributes only; here we ensure every span under the same OTLP trace
+				// gets the conv id if not already present.
+				_, _ = h.db.PropagateConversationID(sp.TraceID, cid)
+			}
+		}
+		if err := h.db.BatchUpsertConversations(updates); err != nil {
+			h.logger.Error("Failed to upsert conversations: %v", err)
+		}
+	}
 
-    h.logger.Info("Successfully processed %d spans from OTLP export", spansProcessed)
+	h.logger.Info("Successfully processed %d spans from OTLP export", spansProcessed)
 
 	// Send success response
 	resp := &tracepb.ExportTraceServiceResponse{}
@@ -475,7 +475,9 @@ func augmentVertexAttrs(attrs map[string]any) {
 						lastUser := ""
 						for _, item := range arr {
 							m, ok := item.(map[string]any)
-							if !ok { continue }
+							if !ok {
+								continue
+							}
 							role, _ := m["role"].(string)
 							if strings.ToLower(role) == "user" {
 								if parts, ok := m["parts"].([]any); ok {
@@ -483,12 +485,16 @@ func augmentVertexAttrs(attrs map[string]any) {
 									for _, p := range parts {
 										if pm, ok := p.(map[string]any); ok {
 											if t, ok := pm["text"].(string); ok {
-												if buf.Len() > 0 { buf.WriteString("\n\n") }
+												if buf.Len() > 0 {
+													buf.WriteString("\n\n")
+												}
 												buf.WriteString(t)
 											}
 										}
 									}
-									if buf.Len() > 0 { lastUser = buf.String() }
+									if buf.Len() > 0 {
+										lastUser = buf.String()
+									}
 								}
 							}
 						}
@@ -516,7 +522,9 @@ func augmentVertexAttrs(attrs map[string]any) {
 						for _, p := range parts {
 							if pm, ok := p.(map[string]any); ok {
 								if t, ok := pm["text"].(string); ok {
-									if buf.Len() > 0 { buf.WriteString("\n\n") }
+									if buf.Len() > 0 {
+										buf.WriteString("\n\n")
+									}
 									buf.WriteString(t)
 								}
 							}
@@ -531,10 +539,14 @@ func augmentVertexAttrs(attrs map[string]any) {
 				// usage tokens
 				if usage, ok := resp["usage_metadata"].(map[string]any); ok {
 					if _, exists := attrs["gen_ai.usage.input_tokens"]; !exists {
-						if pt, ok := asInt(usage["prompt_token_count"]); ok { attrs["gen_ai.usage.input_tokens"] = pt }
+						if pt, ok := asInt(usage["prompt_token_count"]); ok {
+							attrs["gen_ai.usage.input_tokens"] = pt
+						}
 					}
 					if _, exists := attrs["gen_ai.usage.output_tokens"]; !exists {
-						if ct, ok := asInt(usage["candidates_token_count"]); ok { attrs["gen_ai.usage.output_tokens"] = ct }
+						if ct, ok := asInt(usage["candidates_token_count"]); ok {
+							attrs["gen_ai.usage.output_tokens"] = ct
+						}
 					}
 				}
 			}
@@ -550,13 +562,19 @@ func asInt(v any) (int64, bool) {
 	case float64:
 		return int64(n), true
 	case json.Number:
-		if i, err := n.Int64(); err == nil { return i, true }
+		if i, err := n.Int64(); err == nil {
+			return i, true
+		}
 		return 0, false
 	case string:
-		if strings.TrimSpace(n) == "" { return 0, false }
+		if strings.TrimSpace(n) == "" {
+			return 0, false
+		}
 		// best-effort parse
 		var num json.Number = json.Number(n)
-		if i, err := num.Int64(); err == nil { return i, true }
+		if i, err := num.Int64(); err == nil {
+			return i, true
+		}
 		return 0, false
 	default:
 		return 0, false
