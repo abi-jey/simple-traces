@@ -9,6 +9,8 @@ function ConversationDetails({ conversationId, onClose }) {
   const [conversation, setConversation] = useState(null)
   const [linkedConversations, setLinkedConversations] = useState([])
   const [subConversations, setSubConversations] = useState([])
+  const [showRawAttrs, setShowRawAttrs] = useState(false)
+  const [showRawSpan, setShowRawSpan] = useState(false)
 
   useEffect(() => {
     if (conversationId) {
@@ -299,6 +301,90 @@ function ConversationDetails({ conversationId, onClose }) {
                     {renderAttrTable(selectedSpan.attributes)}
                   </div>
                 )}
+
+                {/* Raw Attributes - Expandable */}
+                <div className="detail-section">
+                  <div 
+                    className="expandable-header" 
+                    onClick={() => setShowRawAttrs(!showRawAttrs)}
+                    style={{ 
+                      cursor: 'pointer', 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '0.5rem',
+                      padding: '0.5rem',
+                      margin: '-0.5rem',
+                      borderRadius: '6px',
+                      transition: 'background 0.2s'
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--panel-alt)'}
+                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                  >
+                    <span style={{ 
+                      fontSize: '0.875rem', 
+                      transition: 'transform 0.2s',
+                      transform: showRawAttrs ? 'rotate(90deg)' : 'rotate(0deg)',
+                      display: 'inline-block'
+                    }}>▶</span>
+                    <h3 style={{ margin: 0 }}>Raw Attributes JSON</h3>
+                  </div>
+                  {showRawAttrs && selectedSpan.attributes && (
+                    <pre className="detail-content" style={{ 
+                      marginTop: '0.75rem',
+                      background: 'var(--bg)',
+                      padding: '1rem',
+                      borderRadius: '6px',
+                      fontSize: '0.8rem',
+                      lineHeight: '1.5',
+                      overflow: 'auto',
+                      maxHeight: '400px'
+                    }}>
+                      {JSON.stringify(JSON.parse(selectedSpan.attributes), null, 2)}
+                    </pre>
+                  )}
+                </div>
+
+                {/* Raw Span Object - Expandable */}
+                <div className="detail-section">
+                  <div 
+                    className="expandable-header" 
+                    onClick={() => setShowRawSpan(!showRawSpan)}
+                    style={{ 
+                      cursor: 'pointer', 
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: '0.5rem',
+                      padding: '0.5rem',
+                      margin: '-0.5rem',
+                      borderRadius: '6px',
+                      transition: 'background 0.2s'
+                    }}
+                    onMouseEnter={(e) => e.currentTarget.style.background = 'var(--panel-alt)'}
+                    onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                  >
+                    <span style={{ 
+                      fontSize: '0.875rem', 
+                      transition: 'transform 0.2s',
+                      transform: showRawSpan ? 'rotate(90deg)' : 'rotate(0deg)',
+                      display: 'inline-block'
+                    }}>▶</span>
+                    <h3 style={{ margin: 0 }}>Raw Span Object</h3>
+                  </div>
+                  {showRawSpan && (
+                    <pre className="detail-content" style={{ 
+                      marginTop: '0.75rem',
+                      background: 'var(--bg)',
+                      padding: '1rem',
+                      borderRadius: '6px',
+                      fontSize: '0.8rem',
+                      lineHeight: '1.5',
+                      overflow: 'auto',
+                      maxHeight: '400px'
+                    }}>
+                      {JSON.stringify(selectedSpan, null, 2)}
+                    </pre>
+                  )}
+                </div>
 
                 {/* Events */}
                 {selectedSpan.events && selectedSpan.events !== '[]' && (

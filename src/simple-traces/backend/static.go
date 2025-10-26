@@ -8,6 +8,7 @@ import (
 	"path"
 )
 
+//go:embed frontend/dist
 var frontendFiles embed.FS
 
 func getFrontendFS() http.FileSystem {
@@ -17,7 +18,6 @@ func getFrontendFS() http.FileSystem {
 	}
 	return http.FS(fsys)
 }
-
 
 type spaHandler struct {
 	staticFS   http.FileSystem

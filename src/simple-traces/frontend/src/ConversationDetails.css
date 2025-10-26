@@ -151,3 +151,12 @@
   background-color: var(--success);
   color: white;
 }
+
+/* Expandable sections */
+.expandable-header {
+  user-select: none;
+}
+
+.expandable-header:active {
+  transform: scale(0.98);
+}
