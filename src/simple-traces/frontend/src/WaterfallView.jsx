@@ -104,7 +104,20 @@ function WaterfallView({
     if (span.status_code === 'ERROR') return '#ef4444'
     if (span.status_code === 'OK') return '#10b981'
 
-    // Color by name/category
+    // Priority 1: Use simpleTraces.span.kind if available
+    if (attrs) {
+      const spanKind = attrs['simpleTraces.span.kind']
+      if (spanKind === 'agent') return '#8b5cf6'
+      if (spanKind === 'llm' || spanKind === 'model') return '#3b82f6'
+      if (spanKind === 'tool') return '#f59e0b'
+      if (spanKind === 'invocation') return '#64748b'
+      
+      // Check for SDK hints
+      const sdk = attrs['simpleTraces.SDK']
+      if (sdk === 'google-adk' || sdk === 'adk') return '#14b8a6'
+    }
+
+    // Priority 2: Color by name/category
     const name = (span.name || '').toLowerCase()
     if (name.includes('call_llm') || name.includes('llm')) return '#3b82f6'
     if (name.includes('invoke_agent')) return '#8b5cf6'
@@ -113,7 +126,7 @@ function WaterfallView({
     if (name.includes('torrentagent') || name.includes('adk.agent')) return '#14b8a6'
     if (name.includes('invocation')) return '#64748b'
 
-    // Attribute hints
+    // Priority 3: Attribute hints
     if (attrs) {
       if (attrs['llm.input'] || attrs['gen_ai.prompt']) return '#3b82f6'
       if (attrs['llm.output'] || attrs['gen_ai.response']) return '#8b5cf6'
@@ -195,10 +208,10 @@ function WaterfallView({
       {/* Legend for quick visual mapping */}
       {showLegend && (
         <div className="waterfall-legend" aria-label="timeline legend">
-          <div className="legend-chip"><span className="dot" style={{ background: '#3b82f6' }} />call_llm</div>
-          <div className="legend-chip"><span className="dot" style={{ background: '#8b5cf6' }} />invoke_agent</div>
-          <div className="legend-chip"><span className="dot" style={{ background: '#f59e0b' }} />execute_tool</div>
-          <div className="legend-chip"><span className="dot" style={{ background: '#14b8a6' }} />agent</div>
+          <div className="legend-chip"><span className="dot" style={{ background: '#3b82f6' }} />model/llm</div>
+          <div className="legend-chip"><span className="dot" style={{ background: '#8b5cf6' }} />agent</div>
+          <div className="legend-chip"><span className="dot" style={{ background: '#f59e0b' }} />tool</div>
+          <div className="legend-chip"><span className="dot" style={{ background: '#14b8a6' }} />google-adk</div>
           <div className="legend-chip"><span className="dot" style={{ background: '#64748b' }} />invocation</div>
           <div className="legend-chip"><span className="dot" style={{ background: '#10b981' }} />OK</div>
           <div className="legend-chip"><span className="dot" style={{ background: '#ef4444' }} />ERROR</div>
