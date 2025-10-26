@@ -2,6 +2,7 @@ package backend
 
 import (
 	"encoding/json"
+	"strings"
 )
 
 // FlattenAttrs flattens a nested map[string]any into dot-notated keys.
@@ -10,6 +11,16 @@ func FlattenAttrs(in map[string]any) map[string]any {
 	out := make(map[string]any)
 	flattenInto("", in, out)
 	return out
+}
+
+// FlattenAttrsWithTrace works like FlattenAttrs but also returns a list of keys
+// that were produced by flattening nested objects (i.e., keys containing dots).
+// This is useful for debug logging to reveal implicit key renames.
+func FlattenAttrsWithTrace(in map[string]any) (map[string]any, []string) {
+	out := make(map[string]any)
+	var produced []string
+	flattenIntoWithTrace("", in, out, &produced)
+	return out, produced
 }
 
 func flattenInto(prefix string, val any, out map[string]any) {
@@ -31,6 +42,34 @@ func flattenInto(prefix string, val any, out map[string]any) {
 	default:
 		if prefix != "" {
 			out[prefix] = val
+		}
+	}
+}
+
+func flattenIntoWithTrace(prefix string, val any, out map[string]any, produced *[]string) {
+	switch m := val.(type) {
+	case map[string]any:
+		for k, v := range m {
+			key := k
+			if prefix != "" {
+				key = prefix + "." + k
+			}
+			switch v.(type) {
+			case map[string]any:
+				flattenIntoWithTrace(key, v, out, produced)
+			default:
+				out[key] = v
+				if strings.Contains(key, ".") { // produced by flattening a nested object
+					*produced = append(*produced, key)
+				}
+			}
+		}
+	default:
+		if prefix != "" {
+			out[prefix] = val
+			if strings.Contains(prefix, ".") {
+				*produced = append(*produced, prefix)
+			}
 		}
 	}
 }

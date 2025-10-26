@@ -1,6 +1,7 @@
 package backend
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
 	tracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -49,7 +51,17 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	h.logger.Debug("Received OTLP payload of %d bytes", len(body))
+	h.logger.Debug("Received OTLP payload of %d bytes (Content-Type=%s)", len(body), r.Header.Get("Content-Type"))
+	// Log raw input in debug mode (truncate for safety)
+	if len(body) > 0 {
+		// Use base64 so logs stay printable
+		const maxRaw = 4096
+		raw := body
+		if len(raw) > maxRaw {
+			raw = raw[:maxRaw]
+		}
+		h.logger.Debug("Raw OTLP (base64, first %d bytes of %d): %s...", len(raw), len(body), base64.StdEncoding.EncodeToString(raw))
+	}
 
 	// Parse OTLP trace request
 	var req tracepb.ExportTraceServiceRequest
@@ -57,6 +69,18 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("Failed to unmarshal OTLP trace request: %v", err)
 		http.Error(w, "Failed to parse OTLP request", http.StatusBadRequest)
 		return
+	}
+
+	// Also dump a JSON view of the OTLP content for debugging
+	{
+		marshaler := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: false, Indent: "  "}
+		if b, err := marshaler.Marshal(&req); err == nil {
+			const maxJSON = 8192
+			if len(b) > maxJSON {
+				b = b[:maxJSON]
+			}
+			h.logger.Debug("OTLP JSON preview (truncated): %s...", string(b))
+		}
 	}
 
 	h.logger.Info("Processing OTLP trace export with %d resource spans", len(req.ResourceSpans))
@@ -105,6 +129,7 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							cu.Model = model
 						}
 					}
+					h.logger.Debug("Derived conversation_id=%s for span_id=%s trace_id=%s", convID, spanRow.SpanID, spanRow.TraceID)
 				}
 
 				// collect span links (link to other traces)
@@ -235,21 +260,30 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 			}
 			key := attr.Key
 			val := anyValueToInterface(attr.Value)
+			// record prefixed resource attribute
 			attrs["resource."+key] = val
 			// Also propagate to top-level if not present already
 			if _, exists := attrs[key]; !exists {
 				attrs[key] = val
+				h.logger.Debug("Propagated resource attribute to top-level: %s <- resource.%s", key, key)
 			}
 		}
 	}
 
 	// Provider-specific augmentation (e.g., Vertex Agent JSON fields)
-	augmentVertexAttrs(attrs)
+	if added := augmentVertexAttrs(attrs); len(added) > 0 {
+		h.logger.Debug("Derived attributes added: %v", added)
+	}
 
 	// Extract model and IO usage info from attributes (with broader provider coverage)
-	model := detectModelFromAttrs(attrs)
+	model, modelSrc := detectModelFromAttrs(attrs)
 	if strings.TrimSpace(model) == "" {
 		model = "unknown"
+	}
+	if strings.TrimSpace(modelSrc) != "" {
+		h.logger.Debug("Detected model='%s' from key '%s'", model, modelSrc)
+	} else {
+		h.logger.Debug("Detected model='%s' (no explicit source key)", model)
 	}
 	input := ""
 	output := ""
@@ -329,8 +363,12 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 		attrs["span.events"] = events
 	}
 
-	// Flatten attributes for metadata and typed storage
-	flat := FlattenAttrs(attrs)
+	// Flatten attributes for metadata and typed storage (record any nested-key renames)
+	flat, flattenedKeys := FlattenAttrsWithTrace(attrs)
+	if len(flattenedKeys) > 0 {
+		// Log only in debug: which keys resulted from flattening (i.e., implicit renames to dot-notation)
+		h.logger.Debug("Flattened nested attributes into dot-keys (%d): %v", len(flattenedKeys), flattenedKeys)
+	}
 	metadataJSON, _ := json.Marshal(flat)
 
 	// Create trace entry
@@ -388,9 +426,12 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 
 	// Build typed span attributes rows from flattened map
 	var attrRows []SpanAttribute
+	var skippedKeys []string
+	var typeCoercions []string
 	for k, v := range attrsOnly {
 		// Skip IDs if present as attributesOnly
 		if k == "span.id" || k == "trace.id" {
+			skippedKeys = append(skippedKeys, k+" (stored separately)")
 			continue
 		}
 		a := SpanAttribute{SpanID: spanRow.SpanID, TraceID: spanRow.TraceID, Key: k, Type: AttrType(v)}
@@ -406,6 +447,7 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 				s := fmt.Sprintf("%v", v)
 				a.Type = "string"
 				a.StringVal = &s
+				typeCoercions = append(typeCoercions, fmt.Sprintf("%s: bool->string", k))
 			}
 		case "int":
 			switch n := v.(type) {
@@ -421,6 +463,7 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 				s := fmt.Sprintf("%v", v)
 				a.Type = "string"
 				a.StringVal = &s
+				typeCoercions = append(typeCoercions, fmt.Sprintf("%s: int->string", k))
 			}
 		case "float":
 			switch n := v.(type) {
@@ -439,6 +482,7 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 				s := fmt.Sprintf("%v", v)
 				a.Type = "string"
 				a.StringVal = &s
+				typeCoercions = append(typeCoercions, fmt.Sprintf("%s: float->string", k))
 			}
 		case "array", "object", "null":
 			b, _ := json.Marshal(v)
@@ -452,12 +496,28 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 		attrRows = append(attrRows, a)
 	}
 
+	// Debug summary: what we did/didn't store
+	if len(skippedKeys) > 0 {
+		h.logger.Debug("Skipped attributes for typed storage (span %s): %v", spanRow.SpanID, skippedKeys)
+	}
+	if len(typeCoercions) > 0 {
+		h.logger.Debug("Type coercions applied (span %s): %v", spanRow.SpanID, typeCoercions)
+	}
+	if _, ok := attrs["span.events"]; ok {
+		h.logger.Debug("span.events stored in Events column for span %s (%d events)", spanRow.SpanID, len(span.Events))
+	}
+	// Summary: how many attributes we prepared vs available
+	h.logger.Debug("Prepared %d typed attributes from %d flattened keys for span %s (skipped=%d)", len(attrRows), len(attrsOnly), spanRow.SpanID, len(skippedKeys))
+
 	return traceEntry, spanRow, attrRows
 }
 
 // augmentVertexAttrs parses provider-specific blobs (like Vertex Agent request/response) into normalized keys
 // to improve search and UI rendering. It mutates attrs in-place.
-func augmentVertexAttrs(attrs map[string]any) {
+// augmentVertexAttrs parses provider-specific blobs (like Vertex Agent request/response) into normalized keys
+// and returns a list of derived keys that were added for debug visibility.
+func augmentVertexAttrs(attrs map[string]any) []string {
+	var added []string
 	// Request: gcp.vertex.agent.llm_request (JSON string)
 	if v, ok := attrs["gcp.vertex.agent.llm_request"]; ok {
 		if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
@@ -467,6 +527,7 @@ func augmentVertexAttrs(attrs map[string]any) {
 				if cfg, ok := req["config"].(map[string]any); ok {
 					if si, ok := cfg["system_instruction"].(string); ok && strings.TrimSpace(si) != "" {
 						attrs["st.system_instruction"] = si
+						added = append(added, "st.system_instruction")
 					}
 				}
 				// user messages -> derive prompt (take last user text)
@@ -501,9 +562,11 @@ func augmentVertexAttrs(attrs map[string]any) {
 						if strings.TrimSpace(lastUser) != "" {
 							if _, exists := attrs["gen_ai.prompt"]; !exists {
 								attrs["gen_ai.prompt"] = lastUser
+								added = append(added, "gen_ai.prompt")
 							}
 							// also expose all messages for UI (kept as array)
 							attrs["st.messages"] = arr
+							added = append(added, "st.messages")
 						}
 					}
 				}
@@ -532,6 +595,7 @@ func augmentVertexAttrs(attrs map[string]any) {
 						if buf.Len() > 0 {
 							if _, exists := attrs["gen_ai.response"]; !exists {
 								attrs["gen_ai.response"] = buf.String()
+								added = append(added, "gen_ai.response")
 							}
 						}
 					}
@@ -541,17 +605,20 @@ func augmentVertexAttrs(attrs map[string]any) {
 					if _, exists := attrs["gen_ai.usage.input_tokens"]; !exists {
 						if pt, ok := asInt(usage["prompt_token_count"]); ok {
 							attrs["gen_ai.usage.input_tokens"] = pt
+							added = append(added, "gen_ai.usage.input_tokens")
 						}
 					}
 					if _, exists := attrs["gen_ai.usage.output_tokens"]; !exists {
 						if ct, ok := asInt(usage["candidates_token_count"]); ok {
 							attrs["gen_ai.usage.output_tokens"] = ct
+							added = append(added, "gen_ai.usage.output_tokens")
 						}
 					}
 				}
 			}
 		}
 	}
+	return added
 }
 
 // asInt attempts to coerce an interface{} to int64-compatible int
@@ -582,7 +649,8 @@ func asInt(v any) (int64, bool) {
 }
 
 // detectModelFromAttrs tries a comprehensive set of keys and embedded JSONs to find a model name
-func detectModelFromAttrs(attrs map[string]any) string {
+// detectModelFromAttrs returns model name and the source key it came from (if any)
+func detectModelFromAttrs(attrs map[string]any) (string, string) {
 	// direct keys first
 	keys := []string{
 		"st.model", // already normalized
@@ -593,7 +661,7 @@ func detectModelFromAttrs(attrs map[string]any) string {
 		if v, ok := attrs[k]; ok {
 			s := strings.TrimSpace(fmt.Sprintf("%v", v))
 			if s != "" {
-				return s
+				return s, k
 			}
 		}
 	}
@@ -611,7 +679,7 @@ func detectModelFromAttrs(attrs map[string]any) string {
 					if m, ok := obj["model"]; ok {
 						s := strings.TrimSpace(fmt.Sprintf("%v", m))
 						if s != "" {
-							return s
+							return s, k + ".model"
 						}
 					}
 				}
@@ -619,7 +687,7 @@ func detectModelFromAttrs(attrs map[string]any) string {
 				if m, ok := vv["model"]; ok {
 					s := strings.TrimSpace(fmt.Sprintf("%v", m))
 					if s != "" {
-						return s
+						return s, k + ".model"
 					}
 				}
 			}
@@ -631,10 +699,10 @@ func detectModelFromAttrs(attrs map[string]any) string {
 		// Heuristic: if contains vendor/model tokens
 		lower := strings.ToLower(s)
 		if strings.Contains(lower, "gpt") || strings.Contains(lower, "gemini") || strings.Contains(lower, "claude") {
-			return s
+			return s, "resource.service.name"
 		}
 	}
-	return ""
+	return "", ""
 }
 
 // detectCategory derives a coarse category for the span for coloring/filtering

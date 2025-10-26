@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="title">
+  <title>Simple Traces Lens</title>
+  <rect x="4" y="4" width="56" height="56" rx="14" ry="14" fill="#0f1222"/>
+  <!-- Path under lens -->
+  <path d="M14 38c6-8 12-10 18-10s10 2 18-10" fill="none" stroke="#a0b2ff" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- Lens -->
+  <g transform="translate(28,28)">
+    <circle cx="0" cy="0" r="10" fill="#0f1222" stroke="#48e0ff" stroke-width="3"/>
+  </g>
+  <!-- Handle -->
+  <path d="M40 40l10 10" stroke="#48e0ff" stroke-width="4" stroke-linecap="round"/>
+  <!-- Accessibility -->
+  <desc>Magnifying lens highlighting a trace path</desc>
+</svg>
