@@ -105,6 +105,7 @@ func loadConfig(logLevelFlag string) Config {
 	return config
 }
 
+
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
