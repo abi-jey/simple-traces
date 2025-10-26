@@ -8,7 +8,6 @@ import (
 	"path"
 )
 
-//go:embed frontend/dist
 var frontendFiles embed.FS
 
 func getFrontendFS() http.FileSystem {
@@ -19,13 +18,7 @@ func getFrontendFS() http.FileSystem {
 	return http.FS(fsys)
 }
 
-// spaHandler implements the http.Handler interface for serving a SPA
-// It serves static files if they exist, otherwise serves index.html for client-side routing
-// Supported SPA routes:
-//   - / (root)
-//   - /projects
-//   - /projects/:id
-//   - /conversations/:id
+
 type spaHandler struct {
 	staticFS   http.FileSystem
 	fileServer http.Handler
@@ -51,7 +44,6 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// File doesn't exist or is a directory, check for common static file extensions
 	// If it's a request for a static asset that doesn't exist, return 404
 	ext := path.Ext(urlPath)
 	if ext == ".js" || ext == ".css" || ext == ".png" || ext == ".jpg" || ext == ".ico" || ext == ".svg" {

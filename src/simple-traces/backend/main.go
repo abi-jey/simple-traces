@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,13 +18,11 @@ type Config struct {
 	Port         string
 	FrontendDir  string
 	LogLevel     string
-	OTLPEnabled  bool
-	OTLPEndpoint string
 }
 
 // Run starts the Simple Traces server using environment configuration.
-func Run() error {
-	config := loadConfig()
+func Run(logLevelFlag string) error {
+	config := loadConfig(logLevelFlag)
 
 	// Initialize logger
 	logger := InitLogger(config.LogLevel)
@@ -40,13 +37,6 @@ func Run() error {
 	defer db.Close()
 	logger.Info("Database initialized successfully (type: %s)", config.DBType)
 
-	// Log OTLP collector status
-	if config.OTLPEnabled {
-		logger.Info("OpenTelemetry OTLP collector enabled")
-	} else {
-		logger.Info("OpenTelemetry OTLP collector disabled")
-	}
-
 	router := mux.NewRouter()
 
 	// API routes
@@ -58,7 +48,6 @@ func Run() error {
 
 	// Spans endpoints: list and import JSONL examples
 	api.HandleFunc("/spans", getSpansHandler(db, logger)).Methods("GET")
-	api.HandleFunc("/spans/import", importSpansJSONLHandler(db, logger)).Methods("POST")
 
 	// Grouped traces (OTLP trace_id)
 	api.HandleFunc("/trace-groups", getTraceGroupsHandler(db, logger)).Methods("GET")
@@ -71,15 +60,10 @@ func Run() error {
 	api.HandleFunc("/conversations/{id}/linked", getLinkedConversationsHandler(db, logger)).Methods("GET")
 	api.HandleFunc("/conversations/{id}/sub", getSubConversationsHandler(db, logger)).Methods("GET")
 
-	// Admin: backfill derived attributes for existing spans
-	api.HandleFunc("/admin/backfill-derived", backfillDerivedHandler(db, logger)).Methods("POST")
-
 	// OpenTelemetry OTLP endpoint
-	if config.OTLPEnabled {
-		otlpHandler := NewOTLPHandler(db, logger)
-		router.HandleFunc("/v1/traces", otlpHandler.ServeHTTP).Methods("POST")
-		logger.Info("OTLP HTTP endpoint enabled at /v1/traces")
-	}
+	otlpHandler := NewOTLPHandler(db, logger)
+	router.HandleFunc("/v1/traces", otlpHandler.ServeHTTP).Methods("POST")
+	logger.Info("OTLP HTTP endpoint enabled at /v1/traces")
 
 	// Serve embedded frontend static files with SPA fallback
 	router.PathPrefix("/").Handler(newSPAHandler(getFrontendFS()))
@@ -96,9 +80,7 @@ func Run() error {
 	logger.Info("Open in your browser: %s", baseURL)
 	logger.Debug("Alternative: http://127.0.0.1:%s", config.Port)
 	logger.Debug("API base: %s/api", baseURL)
-	if config.OTLPEnabled {
-		logger.Info("OTLP ingest endpoint: %s/v1/traces", baseURL)
-	}
+	logger.Info("OTLP ingest endpoint: %s/v1/traces", baseURL)
 	if err := http.ListenAndServe(addr, router); err != nil {
 		logger.Error("Server failed to start: %v", err)
 		return fmt.Errorf("listen and serve: %w", err)
@@ -106,16 +88,14 @@ func Run() error {
 	return nil
 }
 
-func loadConfig() Config {
+func loadConfig(logLevelFlag string) Config {
 	config := Config{
 		DBType: getEnv("DB_TYPE", "sqlite"),
 		// Default to a local, writable path for non-container runs; Dockerfile overrides to /data/traces.db
 		DBConnection: getEnv("DB_CONNECTION", "./data/traces.db"),
 		Port:         getEnv("PORT", "8080"),
 		FrontendDir:  "", // No longer used - frontend is embedded
-		LogLevel:     getEnv("LOG_LEVEL", "INFO"),
-		OTLPEnabled:  parseBool(getEnv("OTLP_ENABLED", "true")),
-		OTLPEndpoint: getEnv("OTLP_ENDPOINT", ":4318"),
+		LogLevel:     getLogLevel(logLevelFlag),
 	}
 
 	if config.DBType == "postgres" && config.DBConnection == "./traces.db" {
@@ -125,16 +105,19 @@ func loadConfig() Config {
 	return config
 }
 
-func parseBool(s string) bool {
-	s = strings.ToLower(strings.TrimSpace(s))
-	return s == "true" || s == "1" || s == "yes" || s == "on"
-}
-
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
 	}
 	return defaultValue
+}
+
+// getLogLevel returns log level from flag or environment, preferring flag
+func getLogLevel(flagValue string) string {
+	if flagValue != "" {
+		return flagValue
+	}
+	return getEnv("LOG_LEVEL", "INFO")
 }
 
 func corsMiddleware(next http.Handler) http.Handler {
@@ -358,302 +341,6 @@ func getSpansHandler(db Database, logger *Logger) http.HandlerFunc {
 	}
 }
 
-// importSpansJSONLHandler accepts a JSON body with either a path to a JSONL file under data/ or an array of span objects
-// Example body: {"path": "data/telegram_agent_traces.jsonl"}
-// or {"spans": [{...}, {...}]}
-func importSpansJSONLHandler(db Database, logger *Logger) http.HandlerFunc {
-	type Req struct {
-		Path  string           `json:"path"`
-		Spans []map[string]any `json:"spans"`
-	}
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req Req
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
-			return
-		}
-		var spans []Span
-		var attrRows []SpanAttribute
-		convAgg := make(map[string]*ConversationUpdate)
-		if len(req.Spans) > 0 {
-			for _, raw := range req.Spans {
-				if sp, ar, err := spanFromRaw(raw); err == nil {
-					spans = append(spans, sp)
-					attrRows = append(attrRows, ar...)
-					// derive conversation id from attrs
-					if cid := deriveConversationID(ar); cid != "" {
-						cu := convAgg[cid]
-						if cu == nil {
-							convAgg[cid] = &ConversationUpdate{ID: cid, Start: sp.StartTime, End: sp.EndTime, Count: 1}
-						} else {
-							if sp.StartTime.Before(cu.Start) {
-								cu.Start = sp.StartTime
-							}
-							if sp.EndTime.After(cu.End) {
-								cu.End = sp.EndTime
-							}
-							cu.Count += 1
-						}
-					}
-				} else {
-					logger.Warn("skip invalid span: %v", err)
-				}
-			}
-		} else if req.Path != "" {
-			// Limit to project working dir
-			if !strings.HasPrefix(req.Path, "./") && !strings.HasPrefix(req.Path, "/") {
-				req.Path = "./" + req.Path
-			}
-			// Scan the JSONL file line by line to avoid loading into memory
-			file, err := os.Open(req.Path)
-			if err != nil {
-				http.Error(w, fmt.Sprintf("open file: %v", err), http.StatusBadRequest)
-				return
-			}
-			defer file.Close()
-			scanner := bufio.NewScanner(file)
-			buf := make([]byte, 0, 1024*1024)
-			scanner.Buffer(buf, 10*1024*1024)
-			for scanner.Scan() {
-				line := strings.TrimSpace(scanner.Text())
-				if line == "" {
-					continue
-				}
-				raw, err := decodeJSONLineUseNumber(line)
-				if err != nil {
-					logger.Warn("bad jsonl line: %v", err)
-					continue
-				}
-				sp, ar, err := spanFromRaw(raw)
-				if err != nil {
-					logger.Warn("skip invalid span: %v", err)
-					continue
-				}
-				spans = append(spans, sp)
-				attrRows = append(attrRows, ar...)
-				if cid := deriveConversationID(ar); cid != "" {
-					cu := convAgg[cid]
-					if cu == nil {
-						convAgg[cid] = &ConversationUpdate{ID: cid, Start: sp.StartTime, End: sp.EndTime, Count: 1}
-					} else {
-						if sp.StartTime.Before(cu.Start) {
-							cu.Start = sp.StartTime
-						}
-						if sp.EndTime.After(cu.End) {
-							cu.End = sp.EndTime
-						}
-						cu.Count += 1
-					}
-				}
-			}
-			if err := scanner.Err(); err != nil {
-				http.Error(w, fmt.Sprintf("scan jsonl: %v", err), http.StatusBadRequest)
-				return
-			}
-		} else {
-			http.Error(w, "provide either 'path' or 'spans'", http.StatusBadRequest)
-			return
-		}
-
-		if err := db.BatchInsertSpans(spans); err != nil {
-			logger.Error("batch insert spans: %v", err)
-			http.Error(w, fmt.Sprintf("failed to save spans: %v", err), http.StatusInternalServerError)
-			return
-		}
-		if err := db.BatchUpsertSpanAttributes(attrRows); err != nil {
-			logger.Error("batch upsert span attributes: %v", err)
-			http.Error(w, fmt.Sprintf("failed to save span attributes: %v", err), http.StatusInternalServerError)
-			return
-		}
-		// If we derived any conversation ids, propagate them to all spans with the same trace_id
-		if len(convAgg) > 0 {
-			for cid := range convAgg {
-				// for each trace present in this batch, propagate
-				seen := map[string]struct{}{}
-				for _, sp := range spans {
-					if _, ok := seen[sp.TraceID]; ok {
-						continue
-					}
-					seen[sp.TraceID] = struct{}{}
-					if _, err := db.PropagateConversationID(sp.TraceID, cid); err != nil {
-						logger.Warn("propagate conversation id failed trace=%s cid=%s: %v", sp.TraceID, cid, err)
-					}
-				}
-			}
-		}
-		if len(convAgg) > 0 {
-			updates := make([]ConversationUpdate, 0, len(convAgg))
-			for _, v := range convAgg {
-				updates = append(updates, *v)
-			}
-			if err := db.BatchUpsertConversations(updates); err != nil {
-				logger.Error("batch upsert conversations: %v", err)
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"inserted": len(spans), "attributes": len(attrRows)})
-	}
-}
-
-// spanFromRaw maps the sample JSON span shape to our Span struct
-func spanFromRaw(raw map[string]any) (Span, []SpanAttribute, error) {
-	// Required fields
-	name, _ := raw["name"].(string)
-	traceID, _ := raw["trace_id"].(string)
-	spanID, _ := raw["span_id"].(string)
-	if name == "" || traceID == "" || spanID == "" {
-		return Span{}, nil, fmt.Errorf("missing required fields")
-	}
-	// times are in UnixNano per sample
-	var start, end time.Time
-	switch v := raw["start_time"].(type) {
-	case float64:
-		start = time.Unix(0, int64(v))
-	case int64:
-		start = time.Unix(0, v)
-	case json.Number:
-		if n, err := v.Int64(); err == nil {
-			start = time.Unix(0, n)
-		}
-	case string:
-		// try parse as int64 string
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			start = time.Unix(0, n)
-		}
-	}
-	switch v := raw["end_time"].(type) {
-	case float64:
-		end = time.Unix(0, int64(v))
-	case int64:
-		end = time.Unix(0, v)
-	case json.Number:
-		if n, err := v.Int64(); err == nil {
-			end = time.Unix(0, n)
-		}
-	case string:
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			end = time.Unix(0, n)
-		}
-	}
-	if start.IsZero() || end.IsZero() {
-		return Span{}, nil, fmt.Errorf("invalid timestamps")
-	}
-	dur := end.Sub(start).Milliseconds()
-
-	// status
-	statusCode := ""
-	statusDesc := ""
-	if st, ok := raw["status"].(map[string]any); ok {
-		if v, ok := st["status_code"].(string); ok {
-			statusCode = v
-		}
-		if v, ok := st["description"].(string); ok {
-			statusDesc = v
-		}
-	}
-
-	// attributes/events
-	var attrsStr, eventsStr string
-	var attrRows []SpanAttribute
-	if attrs, ok := raw["attributes"].(map[string]any); ok {
-		// Flatten JSONL attributes then marshal for storage
-		flat := FlattenAttrs(attrs)
-		if b, err := json.Marshal(flat); err == nil {
-			attrsStr = string(b)
-		}
-		// Build typed attribute rows
-		for k, v := range flat {
-			at := AttrType(v)
-			a := SpanAttribute{SpanID: spanID, TraceID: traceID, Key: k, Type: at}
-			switch at {
-			case "string":
-				s := fmt.Sprintf("%v", v)
-				a.StringVal = &s
-			case "bool":
-				if b, ok := v.(bool); ok {
-					a.BoolVal = &b
-				} else {
-					s := fmt.Sprintf("%v", v)
-					a.Type = "string"
-					a.StringVal = &s
-				}
-			case "int":
-				switch n := v.(type) {
-				case int64:
-					a.IntVal = &n
-				case int:
-					nn := int64(n)
-					a.IntVal = &nn
-				case float64:
-					nn := int64(n)
-					a.IntVal = &nn
-				default:
-					s := fmt.Sprintf("%v", v)
-					a.Type = "string"
-					a.StringVal = &s
-				}
-			case "float":
-				switch n := v.(type) {
-				case float64:
-					a.FloatVal = &n
-				case float32:
-					f := float64(n)
-					a.FloatVal = &f
-				case int64:
-					f := float64(n)
-					a.FloatVal = &f
-				case int:
-					f := float64(n)
-					a.FloatVal = &f
-				default:
-					s := fmt.Sprintf("%v", v)
-					a.Type = "string"
-					a.StringVal = &s
-				}
-			case "array", "object", "null":
-				b, _ := json.Marshal(v)
-				s := string(b)
-				a.JSONVal = &s
-			default:
-				s := fmt.Sprintf("%v", v)
-				a.Type = "string"
-				a.StringVal = &s
-			}
-			attrRows = append(attrRows, a)
-		}
-	}
-	if events, ok := raw["events"].([]any); ok {
-		if b, err := json.Marshal(events); err == nil {
-			eventsStr = string(b)
-		}
-	}
-
-	sp := Span{
-		SpanID:     spanID,
-		TraceID:    traceID,
-		Name:       name,
-		StartTime:  start,
-		EndTime:    end,
-		DurationMS: dur,
-		StatusCode: statusCode,
-		StatusDesc: statusDesc,
-		Attributes: attrsStr,
-		Events:     eventsStr,
-	}
-	return sp, attrRows, nil
-}
-
-// decodeJSONLineUseNumber decodes a JSON line preserving large numbers as json.Number
-func decodeJSONLineUseNumber(line string) (map[string]any, error) {
-	dec := json.NewDecoder(strings.NewReader(line))
-	dec.UseNumber()
-	var raw map[string]any
-	if err := dec.Decode(&raw); err != nil {
-		return nil, err
-	}
-	return raw, nil
-}
-
 // getTraceGroupsHandler returns groups of spans by trace_id, ordered by most recent activity
 func getTraceGroupsHandler(db Database, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -839,32 +526,5 @@ func getSubConversationsHandler(db Database, logger *Logger) http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(subs)
-	}
-}
-
-// backfillDerivedHandler triggers a one-off backfill of derived span attributes (st.model, st.category).
-// POST /api/admin/backfill-derived?limit=2000
-func backfillDerivedHandler(db Database, logger *Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		limit := 2000
-		if s := strings.TrimSpace(r.URL.Query().Get("limit")); s != "" {
-			if v, err := strconv.Atoi(s); err == nil && v > 0 {
-				limit = v
-			}
-		}
-		logger.Info("Starting derived attributes backfill with limit=%d", limit)
-		updated, upserts, err := db.BackfillDerived(limit)
-		if err != nil {
-			logger.Error("Backfill failed: %v", err)
-			http.Error(w, fmt.Sprintf("backfill error: %v", err), http.StatusInternalServerError)
-			return
-		}
-		logger.Info("Backfill completed: spansUpdated=%d attrUpserts=%d", updated, upserts)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"ok":                true,
-			"spans_updated":     updated,
-			"attributes_upsert": upserts,
-		})
 	}
 }

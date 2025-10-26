@@ -1,7 +1,6 @@
 package backend
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,6 +16,20 @@ import (
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	tracepbv1 "go.opentelemetry.io/proto/otlp/trace/v1"
 )
+
+// formatBytes converts byte count to human readable format
+func formatBytes(b int) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
+}
 
 // OTLPHandler handles OTLP trace data via HTTP
 type OTLPHandler struct {
@@ -42,7 +55,6 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.logger.Error("Failed to read OTLP request body: %v", err)
@@ -51,17 +63,7 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	h.logger.Debug("Received OTLP payload of %d bytes (Content-Type=%s)", len(body), r.Header.Get("Content-Type"))
-	// Log raw input in debug mode (truncate for safety)
-	if len(body) > 0 {
-		// Use base64 so logs stay printable
-		const maxRaw = 4096
-		raw := body
-		if len(raw) > maxRaw {
-			raw = raw[:maxRaw]
-		}
-		h.logger.Debug("Raw OTLP (base64, first %d bytes of %d): %s...", len(raw), len(body), base64.StdEncoding.EncodeToString(raw))
-	}
+	h.logger.Debug("Received OTLP payload: %s (Content-Type=%s)", formatBytes(len(body)), r.Header.Get("Content-Type"))
 
 	// Parse OTLP trace request
 	var req tracepb.ExportTraceServiceRequest
@@ -75,11 +77,7 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	{
 		marshaler := protojson.MarshalOptions{UseProtoNames: true, EmitUnpopulated: false, Indent: "  "}
 		if b, err := marshaler.Marshal(&req); err == nil {
-			const maxJSON = 8192
-			if len(b) > maxJSON {
-				b = b[:maxJSON]
-			}
-			h.logger.Debug("OTLP JSON preview (truncated): %s...", string(b))
+			h.logger.Debug("OTLP JSON preview: %s", string(b))
 		}
 	}
 
