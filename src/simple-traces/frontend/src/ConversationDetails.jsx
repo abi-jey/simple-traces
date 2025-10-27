@@ -8,7 +8,6 @@ function ConversationDetails({ conversationId, onClose }) {
   const [selectedSpan, setSelectedSpan] = useState(null)
   const [conversation, setConversation] = useState(null)
   const [linkedConversations, setLinkedConversations] = useState([])
-  const [subConversations, setSubConversations] = useState([])
   const [showRawAttrs, setShowRawAttrs] = useState(false)
   const [showRawSpan, setShowRawSpan] = useState(false)
   const [showInstruction, setShowInstruction] = useState(false)
@@ -72,17 +71,6 @@ function ConversationDetails({ conversationId, onClose }) {
         }
       } catch (e) {
         console.warn('Failed to fetch linked conversations:', e)
-      }
-      
-      // Fetch sub conversations
-      try {
-        const subRes = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/sub`)
-        if (subRes.ok) {
-          const subData = await subRes.json()
-          setSubConversations(subData || [])
-        }
-      } catch (e) {
-        console.warn('Failed to fetch sub conversations:', e)
       }
       
       setLoading(false)
@@ -398,15 +386,6 @@ function ConversationDetails({ conversationId, onClose }) {
               <span className="linked-label">Links to:</span>
               {linkedConversations.map(id => (
                 <span key={id} className="linked-conv-chip">{id.slice(0, 8)}...</span>
-              ))}
-            </div>
-          )}
-          {/* Sub conversations */}
-          {subConversations && subConversations.length > 0 && (
-            <div className="sub-conversations-info">
-              <span className="linked-label">Sub-conversations:</span>
-              {subConversations.map(id => (
-                <span key={id} className="linked-conv-chip sub">{id.slice(0, 8)}...</span>
               ))}
             </div>
           )}

@@ -58,7 +58,6 @@ func Run(logLevelFlag string) error {
 	api.HandleFunc("/conversations", getConversationsHandler(db, logger)).Methods("GET")
 	api.HandleFunc("/conversations/{id}", deleteConversationHandler(db, logger)).Methods("DELETE")
 	api.HandleFunc("/conversations/{id}/linked", getLinkedConversationsHandler(db, logger)).Methods("GET")
-	api.HandleFunc("/conversations/{id}/sub", getSubConversationsHandler(db, logger)).Methods("GET")
 
 	// OpenTelemetry OTLP endpoint
 	otlpHandler := NewOTLPHandler(db, logger)
@@ -506,25 +505,5 @@ func getLinkedConversationsHandler(db Database, logger *Logger) http.HandlerFunc
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(linked)
-	}
-}
-
-// getSubConversationsHandler returns conversations that link to this conversation
-func getSubConversationsHandler(db Database, logger *Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-		id := strings.TrimSpace(vars["id"])
-		if id == "" {
-			http.Error(w, "missing id", http.StatusBadRequest)
-			return
-		}
-		subs, err := db.GetSubConversations(id)
-		if err != nil {
-			logger.Error("Failed to get sub conversations: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to get sub conversations: %v", err), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(subs)
 	}
 }
