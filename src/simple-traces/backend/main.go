@@ -29,7 +29,7 @@ func Run(logLevelFlag string) error {
 	logger.Info("Starting Simple Traces server")
 	logger.Info("Log level: %s", config.LogLevel)
 
-	db, err := initDB(config)
+	db, err := InitDatabase(&config)
 	if err != nil {
 		logger.Error("Failed to initialize database: %v", err)
 		return fmt.Errorf("init db: %w", err)
@@ -53,6 +53,11 @@ func Run(logLevelFlag string) error {
 	api.HandleFunc("/trace-groups", getTraceGroupsHandler(db, logger)).Methods("GET")
 	api.HandleFunc("/trace-groups/{trace_id}", getTraceGroupSpansHandler(db, logger)).Methods("GET")
 	api.HandleFunc("/trace-groups/{trace_id}", deleteTraceGroupHandler(db, logger)).Methods("DELETE")
+
+	// Projects API
+	api.HandleFunc("/projects", getProjectsHandler(db, logger)).Methods("GET")
+	api.HandleFunc("/projects", createProjectHandler(db, logger)).Methods("POST")
+	api.HandleFunc("/projects/{id}", getProjectByIDHandler(db, logger)).Methods("GET")
 
 	// Conversations API
 	api.HandleFunc("/conversations", getConversationsHandler(db, logger)).Methods("GET")
@@ -426,6 +431,80 @@ func deleteTraceGroupHandler(db Database, logger *Logger) http.HandlerFunc {
 	}
 }
 
+// getProjectsHandler returns all projects
+func getProjectsHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projects, err := db.GetProjects()
+		if err != nil {
+			logger.Error("Failed to get projects: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to get projects: %v", err), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(projects)
+	}
+}
+
+// getProjectByIDHandler returns a single project by ID
+func getProjectByIDHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		vars := mux.Vars(r)
+		id := strings.TrimSpace(vars["id"])
+		if id == "" {
+			http.Error(w, "missing id", http.StatusBadRequest)
+			return
+		}
+
+		project, err := db.GetProjectByID(id)
+		if err != nil {
+			logger.Error("Failed to get project: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to get project: %v", err), http.StatusNotFound)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(project)
+	}
+}
+
+// createProjectHandler creates a new project
+func createProjectHandler(db Database, logger *Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if strings.TrimSpace(req.ID) == "" || strings.TrimSpace(req.Name) == "" {
+			http.Error(w, "id and name are required", http.StatusBadRequest)
+			return
+		}
+
+		if err := db.CreateProject(req.ID, req.Name); err != nil {
+			logger.Error("Failed to create project: %v", err)
+			http.Error(w, fmt.Sprintf("Failed to create project: %v", err), http.StatusInternalServerError)
+			return
+		}
+
+		// Return the created project
+		project, err := db.GetProjectByID(req.ID)
+		if err != nil {
+			logger.Error("Failed to get created project: %v", err)
+			http.Error(w, "Project created but failed to retrieve", http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(project)
+	}
+}
+
 // getConversationsHandler returns paginated conversations ordered by last_end_time DESC
 func getConversationsHandler(db Database, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -503,7 +582,22 @@ func getLinkedConversationsHandler(db Database, logger *Logger) http.HandlerFunc
 			http.Error(w, fmt.Sprintf("Failed to get linked conversations: %v", err), http.StatusInternalServerError)
 			return
 		}
+
+		// Parse the pipe-delimited format: spanID|relatedSpanID|relation|conversationID
+		var result []LinkedConversation
+		for _, link := range linked {
+			parts := strings.Split(link, "|")
+			if len(parts) == 4 {
+				result = append(result, LinkedConversation{
+					SpanID:         parts[0],
+					RelatedSpanID:  parts[1],
+					Relation:       parts[2],
+					ConversationID: parts[3],
+				})
+			}
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(linked)
+		json.NewEncoder(w).Encode(result)
 	}
 }

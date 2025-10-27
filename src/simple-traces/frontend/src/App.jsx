@@ -33,7 +33,7 @@ function App() {
   const sentinelRef = useRef(null)
 
   // Theme state (light/dark) persisted in localStorage
-  const [theme, setTheme] = useState('light')
+  const [theme, setTheme] = useState('dark')
 
   // Simple SPA routing & projects
   const [view, setView] = useState('main') // 'main' | 'projects' | 'conversation'
@@ -44,7 +44,7 @@ function App() {
 
   useEffect(() => {
     const saved = localStorage.getItem('st-theme')
-    const initial = saved === 'dark' || saved === 'light' ? saved : 'light'
+    const initial = saved === 'dark' || saved === 'light' ? saved : 'dark'
     setTheme(initial)
     document.documentElement.setAttribute('data-theme', initial)
   }, [])
@@ -67,9 +67,6 @@ function App() {
 
   useEffect(() => {
     // initial load
-    // Projects: load from storage
-    const storedProjects = JSON.parse(localStorage.getItem('st-projects') || '[]')
-    setProjects(storedProjects)
     const slugify = (s) => s.toLowerCase().trim().replace(/\s+/g, '-').replace(/[^a-z0-9\-]/g, '')
     const parseRoute = (path) => {
       if (path === '/' || path === '') return { route: 'root' }
@@ -86,24 +83,11 @@ function App() {
       }
     }
     const applyProject = (pid) => {
-      const list = JSON.parse(localStorage.getItem('st-projects') || '[]')
-      const found = list.find((p) => p.id === pid)
-      const name = found ? found.name : pid
+      const name = pid
       setProjectId(pid)
       setProject(name)
-      localStorage.setItem('st-project-id', pid)
-      localStorage.setItem('st-project', name)
-      // ensure it appears in recent projects
-      if (!found) {
-        const next = [...list, { id: pid, name }]
-        localStorage.setItem('st-projects', JSON.stringify(next))
-        setProjects(next)
-      }
     }
     const route = parseRoute(window.location.pathname)
-    const savedName = localStorage.getItem('st-project')
-    const savedIdRaw = localStorage.getItem('st-project-id')
-    const savedId = savedIdRaw || (savedName ? slugify(savedName) : '')
     if (route.route === 'projects') {
       setView('projects')
     } else if (route.route === 'project') {
@@ -117,16 +101,9 @@ function App() {
       setView('404')
       // Stay on the invalid URL to show it in address bar
     } else if (route.route === 'root') {
-      // root: if saved project exists, navigate to it; otherwise go to projects
-      if (savedId) {
-        applyProject(savedId)
-        setView('main')
-        navigate(`/projects/${encodeURIComponent(savedId)}`)
-        fetchGroups(true)
-      } else {
-        setView('projects')
-        navigate('/projects')
-      }
+      // root: go to projects page
+      setView('projects')
+      navigate('/projects')
     }
     // start light polling for new groups every 5s
     const id = setInterval(() => {
@@ -154,18 +131,9 @@ function App() {
         setView('projects')
       } else if (r.route === 'project') {
         // apply and refresh
-        const list = JSON.parse(localStorage.getItem('st-projects') || '[]')
-        const found = list.find((p) => p.id === r.id)
-        const name = found ? found.name : r.id
+        const name = r.id
         setProjectId(r.id)
         setProject(name)
-        localStorage.setItem('st-project-id', r.id)
-        localStorage.setItem('st-project', name)
-        if (!found) {
-          const next = [...list, { id: r.id, name }]
-          localStorage.setItem('st-projects', JSON.stringify(next))
-          setProjects(next)
-        }
         setView('main')
         // refresh data for the new route project
         setGroups([]); setGroupsBefore(null); setHasMoreGroups(true); setGroupsLoading(true)
@@ -176,14 +144,8 @@ function App() {
       } else if (r.route === '404') {
         setView('404')
       } else if (r.route === 'root') {
-        // root
-        const savedName = localStorage.getItem('st-project') || ''
-        const pid = localStorage.getItem('st-project-id') || (savedName ? slugify(savedName) : '')
-        if (pid) {
-          setView('main')
-        } else {
-          setView('projects')
-        }
+        // root: go to projects page
+        setView('projects')
       }
     }
     window.addEventListener('popstate', onPop)
@@ -373,8 +335,6 @@ function App() {
     const choose = (p) => {
       setProject(p.name)
       setProjectId(p.id)
-      localStorage.setItem('st-project', p.name)
-      localStorage.setItem('st-project-id', p.id)
       // navigate to /projects/:id
       if (window.location.pathname !== `/projects/${encodeURIComponent(p.id)}`) {
         window.history.pushState({}, '', `/projects/${encodeURIComponent(p.id)}`)
@@ -385,19 +345,9 @@ function App() {
     }
     return (
       <div className="projects-page">
-        <h2>Recent Projects</h2>
-        <div className="projects-grid">
-          {projects.map((p) => (
-            <div key={p.id} className="project-card" onClick={() => choose(p)}>
-              <div className="project-icon">📁</div>
-              <div className="project-name">{p.name}</div>
-            </div>
-          ))}
-          {projects.length === 0 && (
-            <div style={{ color: 'var(--muted)' }}>
-              No recent projects. Open a URL like <code>/projects/project-1</code> to view a project.
-            </div>
-          )}
+        <h2>Projects</h2>
+        <div style={{ color: 'var(--muted)', padding: '1rem' }}>
+          Open a URL like <code>/projects/your-project-name</code> to view a project's conversations.
         </div>
       </div>
     )

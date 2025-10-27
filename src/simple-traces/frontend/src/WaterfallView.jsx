@@ -5,6 +5,7 @@ function WaterfallView({
   spans,
   onSpanClick,
   selectedSpanId,
+  linkedConversations = [],
   compact = false,
   showLegend = true,
   defaultCollapsed = false,
@@ -14,6 +15,12 @@ function WaterfallView({
     if (s.length <= n) return s
     return s.slice(0, Math.max(0, n - 1)) + '…'
   }
+  
+  // Helper function to check if a span has linked conversations
+  const hasLinks = (spanId) => {
+    return linkedConversations && linkedConversations.some(link => link.span_id === spanId)
+  }
+  
   if (!spans || spans.length === 0) {
     return <div className="waterfall-empty">No spans to display</div>
   }
@@ -93,6 +100,11 @@ function WaterfallView({
 
   // Get color for span based on status or type
   const getSpanColor = (span) => {
+    // Use same colors for all spans, including linked conversation spans
+
+    // Special color for virtual link spans
+    if (span.isVirtualLink) return '#06b6d4' // cyan for links
+    
     let attrs = null
     try {
       attrs = span.attributes ? JSON.parse(span.attributes) : null
@@ -103,6 +115,7 @@ function WaterfallView({
     // Color by status
     if (span.status_code === 'ERROR') return '#ef4444'
     if (span.status_code === 'OK') return '#10b981'
+    if (span.status_code === 'LINKED') return '#06b6d4'
 
     // Priority 1: Use simpleTraces.span.kind if available
     if (attrs) {
@@ -163,11 +176,12 @@ function WaterfallView({
     const indent = depth * 20 // 20px per level
     const hasChildren = node.children && node.children.length > 0
     const isCollapsed = collapsed[span.span_id]
+    const showLinkIcon = hasLinks(span.span_id)
 
     return (
       <React.Fragment key={span.span_id}>
         <div
-          className={`waterfall-row ${isSelected ? 'selected' : ''}`}
+          className={`waterfall-row ${isSelected ? 'selected' : ''} ${span.isFromLinkedConversation ? 'from-linked-row' : ''}`}
           onClick={() => onSpanClick && onSpanClick(span)}
         >
           <div className="waterfall-label" style={{ paddingLeft: `${indent}px` }}>
@@ -180,16 +194,36 @@ function WaterfallView({
               {hasChildren && (isCollapsed ? '▶ ' : '▼ ')}
               {depth > 0 && !hasChildren && '└─ '}
               {span.name}
+              {showLinkIcon && (
+                <span style={{ 
+                  marginLeft: '0.5rem', 
+                  fontSize: '0.9rem',
+                  opacity: 0.7,
+                  cursor: 'pointer'
+                }} title="Has linked conversations">
+                  🔗
+                </span>
+              )}
             </span>
             <span className="span-duration">{formatDuration(duration)}</span>
           </div>
           <div className="waterfall-track" role="presentation">
             <div
-              className={`waterfall-bar ${isNarrow ? 'narrow' : ''}`}
-              style={{ left: `${leftPct}%`, width: `${widthPct}%`, backgroundColor: color }}
-              title={`${span.name}\nStart: ${formatTime(span.start_time)}\nEnd: ${formatTime(span.end_time)}\nDuration: ${formatDuration(duration)}\nStatus: ${span.status_code || 'N/A'}`}
+              className={`waterfall-bar ${isNarrow ? 'narrow' : ''} ${span.isVirtualLink ? 'virtual-link' : ''}`}
+              style={{ 
+                left: `${leftPct}%`, 
+                width: `${widthPct}%`, 
+                backgroundColor: color
+              }}
+              title={span.isFromLinkedConversation
+                ? `${span.name} (from linked conversation)\nConversation: ${span.linkedConversationId}\nRelation: ${span.linkedRelation}\nStart: ${formatTime(span.start_time)}\nEnd: ${formatTime(span.end_time)}\nDuration: ${formatDuration(duration)}\nStatus: ${span.status_code || 'N/A'}`
+                : `${span.name}\nStart: ${formatTime(span.start_time)}\nEnd: ${formatTime(span.end_time)}\nDuration: ${formatDuration(duration)}\nStatus: ${span.status_code || 'N/A'}`
+              }
             >
-              <div className="waterfall-bar-label">{span.name}</div>
+              <div className="waterfall-bar-label">
+                {span.isFromLinkedConversation && '🔗 '}
+                {span.name}
+              </div>
             </div>
           </div>
         </div>

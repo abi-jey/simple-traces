@@ -2,6 +2,185 @@ import { useState, useEffect } from 'react'
 import WaterfallView from './WaterfallView'
 import './ConversationDetails.css'
 
+function MessageView({ messages, showLinkedBadge = false, onSpanClick = null }) {
+  if (!messages || messages.length === 0) {
+    return (
+      <div style={{ padding: '1rem', textAlign: 'center', color: '#888' }}>
+        No messages found
+      </div>
+    )
+  }
+
+  return (
+    <div className="chat">
+      {messages.map((msg, idx) => {
+        const isSystem = msg.role === 'system'
+        const isUser = msg.role === 'user'
+        const isAssistant = msg.role === 'assistant'
+        const isTool = msg.role === 'tool'
+
+        return (
+          <div 
+            key={idx} 
+            className={`msg ${msg.role}`}
+            style={{
+              marginBottom: '0.5rem',
+              borderLeft: msg.isFromLinked ? '3px solid rgba(6, 182, 212, 0.5)' : 'none',
+              paddingLeft: msg.isFromLinked ? '0.5rem' : '0'
+            }}
+          >
+            <div className="meta" style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: '0.35rem',
+              gap: '0.5rem'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                {isUser && (
+                  <>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                      <span></span>
+                      {msg.userId && <span style={{ fontWeight: '600' }}>{msg.userId}</span>}
+                    </span>
+                  </>
+                )}
+                {isAssistant && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexWrap: 'wrap' }}>
+                    <span>🤖</span>
+                    <span style={{ fontWeight: '600' }}>{msg.agent || 'Assistant'}</span>
+                    {msg.model && (
+                      <span style={{ 
+                        fontSize: '0.7rem', 
+                        opacity: 0.6,
+                        fontWeight: 'normal'
+                      }}>
+                        ({msg.model})
+                      </span>
+                    )}
+                  </span>
+                )}
+                {isTool && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                    <span>🔧</span>
+                    <span style={{ fontWeight: '600' }}>{msg.toolName || 'tool'}</span>
+                  </span>
+                )}
+                {isSystem && <span style={{ fontWeight: '600' }}>system</span>}
+                {showLinkedBadge && msg.isFromLinked && (
+                  <span style={{
+                    fontSize: '0.65rem',
+                    padding: '2px 5px',
+                    background: 'rgba(6, 182, 212, 0.15)',
+                    border: '1px solid rgba(6, 182, 212, 0.3)',
+                    borderRadius: '3px',
+                    color: '#06b6d4',
+                    fontWeight: '600'
+                  }}>
+                    🔗 linked
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                {msg.timestamp && (
+                  <span style={{ fontSize: '0.65rem', opacity: 0.5, whiteSpace: 'nowrap' }}>
+                    {new Date(msg.timestamp).toLocaleTimeString()}
+                  </span>
+                )}
+                {msg.spanId && onSpanClick && (
+                  <button
+                    onClick={() => onSpanClick(msg.spanId)}
+                    style={{
+                      padding: '2px 6px',
+                      fontSize: '0.65rem',
+                      background: 'rgba(59, 130, 246, 0.1)',
+                      border: '1px solid rgba(59, 130, 246, 0.3)',
+                      borderRadius: '3px',
+                      color: '#3b82f6',
+                      cursor: 'pointer',
+                      whiteSpace: 'nowrap'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.target.style.background = 'rgba(59, 130, 246, 0.2)'
+                    }}
+                    onMouseLeave={(e) => {
+                      e.target.style.background = 'rgba(59, 130, 246, 0.1)'
+                    }}
+                    title={`Open span: ${msg.spanName}`}
+                  >
+                    view span
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="text" style={{
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              lineHeight: '1.5'
+            }}>
+              {msg.text || msg.content}
+              {isTool && (msg.input || msg.output) && (
+                <div style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}>
+                  {msg.input && (
+                    <div style={{ marginBottom: '0.5rem' }}>
+                      <div style={{ 
+                        fontSize: '0.7rem', 
+                        fontWeight: 'bold', 
+                        color: '#fb923c',
+                        marginBottom: '0.25rem',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.5px'
+                      }}>
+                        Input
+                      </div>
+                      <pre style={{
+                        background: 'rgba(0,0,0,0.3)',
+                        padding: '0.5rem',
+                        borderRadius: '4px',
+                        fontSize: '0.7rem',
+                        overflow: 'auto',
+                        margin: 0,
+                        lineHeight: '1.4'
+                      }}>
+                        {typeof msg.input === 'string' ? msg.input : JSON.stringify(msg.input, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                  {msg.output && (
+                    <div>
+                      <div style={{ 
+                        fontSize: '0.7rem', 
+                        fontWeight: 'bold', 
+                        color: '#4ade80',
+                        marginBottom: '0.25rem',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.5px'
+                      }}>
+                        Output
+                      </div>
+                      <pre style={{
+                        background: 'rgba(0,0,0,0.3)',
+                        padding: '0.5rem',
+                        borderRadius: '4px',
+                        fontSize: '0.7rem',
+                        overflow: 'auto',
+                        margin: 0,
+                        lineHeight: '1.4'
+                      }}>
+                        {typeof msg.output === 'string' ? msg.output : JSON.stringify(msg.output, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 function ConversationDetails({ conversationId, onClose }) {
   const [spans, setSpans] = useState([])
   const [loading, setLoading] = useState(true)
@@ -26,7 +205,6 @@ function ConversationDetails({ conversationId, onClose }) {
       const res = await fetch(`/api/trace-groups/${encodeURIComponent(conversationId)}`)
       if (!res.ok) throw new Error('Failed to fetch conversation')
       const data = await res.json()
-      setSpans(data)
 
       // Derive conversation metadata from spans (scan for model across spans)
       if (data.length > 0) {
@@ -63,16 +241,58 @@ function ConversationDetails({ conversationId, onClose }) {
       }
       
       // Fetch linked conversations
+      let linkedData = []
       try {
         const linkedRes = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/linked`)
         if (linkedRes.ok) {
-          const linkedData = await linkedRes.json()
-          setLinkedConversations(linkedData || [])
+          linkedData = await linkedRes.json() || []
+          setLinkedConversations(linkedData)
         }
       } catch (e) {
         console.warn('Failed to fetch linked conversations:', e)
       }
       
+      // Fetch spans from linked conversations and insert them as children
+      const spansWithLinks = [...data]
+      const linkedConversationIds = [...new Set(linkedData.map(link => link.conversation_id))]
+      
+      // Fetch all linked conversation spans
+      const linkedSpansPromises = linkedConversationIds.map(convId =>
+        fetch(`/api/trace-groups/${encodeURIComponent(convId)}`)
+          .then(r => r.ok ? r.json() : [])
+          .catch(() => [])
+      )
+      
+      const linkedSpansArrays = await Promise.all(linkedSpansPromises)
+      const linkedSpansData = linkedConversationIds.reduce((acc, convId, idx) => {
+        acc[convId] = linkedSpansArrays[idx] || []
+        return acc
+      }, {})
+      
+      // For each link, insert the linked conversation's spans as children of the parent span
+      for (const link of linkedData) {
+        const parentSpan = spansWithLinks.find(s => s.span_id === link.span_id)
+        if (!parentSpan) continue
+        
+        const linkedSpans = linkedSpansData[link.conversation_id] || []
+        
+        // Mark linked spans as being from a linked conversation
+        // Don't modify parent_span_id - the linked conversation already has correct relationships
+        const markedLinkedSpans = linkedSpans.map(span => ({
+          ...span,
+          isFromLinkedConversation: true,
+          linkedConversationId: link.conversation_id,
+          linkedRelation: link.relation
+        }))
+        
+        // Insert linked spans into the array right after the parent span
+        const parentIdx = spansWithLinks.findIndex(s => s.span_id === link.span_id)
+        if (parentIdx !== -1) {
+          spansWithLinks.splice(parentIdx + 1, 0, ...markedLinkedSpans)
+        }
+      }
+      
+      setSpans(spansWithLinks)
       setLoading(false)
     } catch (e) {
       console.error('Failed to fetch conversation:', e)
@@ -81,6 +301,196 @@ function ConversationDetails({ conversationId, onClose }) {
   }
 
   const formatTS = (ts) => new Date(ts).toLocaleString()
+
+  // Extract conversation messages from all spans
+  const extractConversationMessages = () => {
+    const messages = []
+    
+    // Find the last LLM call span (it will have the complete conversation history)
+    let lastLlmSpan = null
+    let lastLlmTimestamp = null
+    
+    for (const span of spans) {
+      try {
+        const attrs = span.attributes ? JSON.parse(span.attributes) : null
+        if (!attrs) continue
+        
+        const gcpLlmRequest = attrs['gcp.vertex.agent.llm_request']
+        if (gcpLlmRequest) {
+          const timestamp = new Date(span.start_time)
+          if (!lastLlmTimestamp || timestamp > lastLlmTimestamp) {
+            lastLlmSpan = span
+            lastLlmTimestamp = timestamp
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+    
+    // Extract conversation from the last LLM call
+    if (lastLlmSpan) {
+      try {
+        const attrs = JSON.parse(lastLlmSpan.attributes)
+        const gcpLlmRequest = attrs['gcp.vertex.agent.llm_request']
+        const gcpLlmResponse = attrs['gcp.vertex.agent.llm_response']
+        const userId = attrs['simpleTraces.user.id'] || attrs['gen_ai.user.id'] || attrs['user.id']
+        const agent = attrs['simpleTraces.agent.name'] || attrs['gen_ai.agent.name'] || attrs['agent.name'] || 'Assistant'
+        const model = attrs['simpleTraces.model.name'] || attrs['gen_ai.request.model']
+        const timestamp = new Date(lastLlmSpan.start_time)
+        
+        // Extract all messages from the LLM request (contains full conversation history)
+        if (gcpLlmRequest) {
+          try {
+            const llmReq = typeof gcpLlmRequest === 'string' ? JSON.parse(gcpLlmRequest) : gcpLlmRequest
+            if (llmReq.contents && Array.isArray(llmReq.contents)) {
+              for (const content of llmReq.contents) {
+                if (content.role === 'user' && content.parts) {
+                  for (const part of content.parts) {
+                    if (part.text) {
+                      // Skip system instructions
+                      const isSystemInstruction = part.text.trim().startsWith('You are') && part.text.length > 200
+                      if (!isSystemInstruction) {
+                        messages.push({
+                          timestamp,
+                          role: 'user',
+                          content: part.text,
+                          userId,
+                          spanId: lastLlmSpan.span_id,
+                          spanName: lastLlmSpan.name,
+                          isFromLinked: lastLlmSpan.isFromLinkedConversation
+                        })
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } catch (e) {
+            console.error('Error parsing gcp.vertex.agent.llm_request:', e)
+          }
+        }
+        
+        // Extract the response from the last LLM call
+        if (gcpLlmResponse) {
+          try {
+            const llmResp = typeof gcpLlmResponse === 'string' ? JSON.parse(gcpLlmResponse) : gcpLlmResponse
+            if (llmResp.content && llmResp.content.parts) {
+              const responseText = llmResp.content.parts
+                .filter(p => p.text)
+                .map(p => p.text)
+                .join('\n')
+              
+              if (responseText) {
+                messages.push({
+                  timestamp,
+                  role: 'assistant',
+                  content: responseText,
+                  agent,
+                  model,
+                  spanId: lastLlmSpan.span_id,
+                  spanName: lastLlmSpan.name,
+                  isFromLinked: lastLlmSpan.isFromLinkedConversation
+                })
+              }
+            }
+          } catch (e) {
+            console.error('Error parsing gcp.vertex.agent.llm_response:', e)
+          }
+        }
+      } catch (e) {
+        console.error('Error extracting conversation from last LLM span:', e)
+      }
+    }
+    
+    // Also extract tool calls from all spans (these are separate events)
+    for (const span of spans) {
+      try {
+        const attrs = span.attributes ? JSON.parse(span.attributes) : null
+        if (!attrs) continue
+
+        const spanKind = attrs['simpleTraces.span.kind'] || attrs['st.category']
+        const timestamp = new Date(span.start_time)
+        const userId = attrs['simpleTraces.user.id'] || attrs['gen_ai.user.id'] || attrs['user.id']
+        
+        // Extract tool calls and results
+        if (spanKind === 'tool') {
+          const toolName = attrs['simpleTraces.tool.name'] || attrs['gen_ai.tool.name'] || span.name
+          const toolInput = attrs['simpleTraces.tool.input'] || attrs['gen_ai.tool.input']
+          const toolOutput = attrs['simpleTraces.tool.output'] || attrs['gen_ai.tool.output']
+          
+          messages.push({
+            timestamp,
+            role: 'tool',
+            toolName,
+            content: `Tool: ${toolName}`,
+            input: toolInput,
+            output: toolOutput,
+            userId,
+            spanId: span.span_id,
+            spanName: span.name,
+            isFromLinked: span.isFromLinkedConversation
+          })
+        }
+      } catch (e) {
+        console.error('Error extracting tool from span:', span.span_id, e)
+      }
+    }
+
+    // Sort by timestamp
+    return messages.sort((a, b) => a.timestamp - b.timestamp)
+  }
+
+  // Get linked conversations for a specific span
+  const getSpanLinks = (spanId) => {
+    if (!linkedConversations || linkedConversations.length === 0) return []
+    return linkedConversations.filter(link => link.span_id === spanId)
+  }
+
+  // Navigate to a linked conversation
+  const navigateToLinkedConversation = (conversationId) => {
+    window.location.hash = `#/conversation/${conversationId}`
+    window.location.reload() // Force reload to fetch new conversation
+  }
+
+  // Handle span click - navigate if it's a virtual link span
+  const handleSpanClick = (span) => {
+    if (span.isVirtualLink && span.linkedConversationId) {
+      navigateToLinkedConversation(span.linkedConversationId)
+    } else {
+      setSelectedSpan(span)
+    }
+  }
+
+  // Render conversation messages view
+  const renderConversationView = () => {
+    const messages = extractConversationMessages()
+    
+    if (messages.length === 0) {
+      return (
+        <div className="panel-content" style={{ padding: '2rem', textAlign: 'center', color: '#888' }}>
+          <h3 style={{ marginBottom: '0.5rem' }}>No Messages Found</h3>
+          <p style={{ fontSize: '0.9rem' }}>This conversation doesn't contain any extracted messages.</p>
+        </div>
+      )
+    }
+
+    return (
+      <div className="panel-content" style={{ padding: '1.5rem', maxHeight: '100%', overflowY: 'auto' }}>
+        <h3 style={{ marginBottom: '1rem', color: '#fff' }}>Conversation Messages</h3>
+        <MessageView 
+          messages={messages} 
+          showLinkedBadge={true}
+          onSpanClick={(spanId) => {
+            const span = spans.find(s => s.span_id === spanId)
+            if (span) {
+              handleSpanClick(span)
+            }
+          }}
+        />
+      </div>
+    )
+  }
 
   const renderAttrTable = (attrJson) => {
     if (!attrJson) return null
@@ -320,12 +730,17 @@ function ConversationDetails({ conversationId, onClose }) {
     let attrs = null
     try { attrs = sp.attributes ? JSON.parse(sp.attributes) : null } catch (e) { attrs = null }
     if (attrs) {
+      const userId = attrs['simpleTraces.user.id'] || attrs['gen_ai.user.id'] || attrs['user.id']
+      const agent = attrs['simpleTraces.agent.name'] || attrs['gen_ai.agent.name'] || attrs['agent.name'] || 'Assistant'
+      const model = attrs['simpleTraces.model.name'] || attrs['gen_ai.request.model']
+      
       const sys = attrs['st.system_instruction'] || attrs['gen_ai.system'] || attrs['llm.system']
       const user = attrs['llm.input'] || attrs['gen_ai.prompt']
       const assistant = attrs['llm.output'] || attrs['gen_ai.response']
+      
       if (sys) msgs.push({ role: 'system', text: String(sys) })
-      if (user) msgs.push({ role: 'user', text: String(user) })
-      if (assistant) msgs.push({ role: 'assistant', text: String(assistant) })
+      if (user) msgs.push({ role: 'user', text: String(user), userId })
+      if (assistant) msgs.push({ role: 'assistant', text: String(assistant), agent, model })
 
       // Fallbacks: parse Vertex Agent request/response JSON strings when prompt/response missing
       if (!user && typeof attrs['gcp.vertex.agent.llm_request'] === 'string') {
@@ -339,7 +754,7 @@ function ConversationDetails({ conversationId, onClose }) {
               if (text) lastUser = text
             }
           }
-          if (lastUser) msgs.push({ role: 'user', text: lastUser })
+          if (lastUser) msgs.push({ role: 'user', text: lastUser, userId })
         } catch {}
       }
       if (!assistant && typeof attrs['gcp.vertex.agent.llm_response'] === 'string') {
@@ -347,8 +762,25 @@ function ConversationDetails({ conversationId, onClose }) {
           const resp = JSON.parse(attrs['gcp.vertex.agent.llm_response'])
           const parts = Array.isArray(resp?.content?.parts) ? resp.content.parts : []
           const text = parts.map(p => p?.text).filter(Boolean).join('\n\n')
-          if (text) msgs.push({ role: 'assistant', text })
+          if (text) msgs.push({ role: 'assistant', text, agent, model })
         } catch {}
+      }
+      
+      // Add tool information if this is a tool span
+      const spanKind = attrs['simpleTraces.span.kind'] || attrs['st.category']
+      if (spanKind === 'tool') {
+        const toolName = attrs['simpleTraces.tool.name'] || attrs['gen_ai.tool.name'] || sp.name
+        const toolInput = attrs['simpleTraces.tool.input'] || attrs['gen_ai.tool.input']
+        const toolOutput = attrs['simpleTraces.tool.output'] || attrs['gen_ai.tool.output']
+        
+        msgs.push({
+          role: 'tool',
+          text: `Tool: ${toolName}`,
+          toolName,
+          input: toolInput,
+          output: toolOutput,
+          userId
+        })
       }
     }
     if (msgs.length === 0) {
@@ -384,8 +816,8 @@ function ConversationDetails({ conversationId, onClose }) {
           {linkedConversations && linkedConversations.length > 0 && (
             <div className="linked-conversations">
               <span className="linked-label">Links to:</span>
-              {linkedConversations.map(id => (
-                <span key={id} className="linked-conv-chip">{id.slice(0, 8)}...</span>
+              {Array.from(new Set(linkedConversations.map(link => link.conversation_id))).map(convId => (
+                <span key={convId} className="linked-conv-chip">{convId.slice(0, 8)}...</span>
               ))}
             </div>
           )}
@@ -402,8 +834,9 @@ function ConversationDetails({ conversationId, onClose }) {
         <div className="waterfall-section">
           <WaterfallView 
             spans={spans} 
-            onSpanClick={setSelectedSpan}
+            onSpanClick={handleSpanClick}
             selectedSpanId={selectedSpan?.span_id}
+            linkedConversations={linkedConversations}
             compact={true}
             showLegend={true}
             defaultCollapsed={true}
@@ -418,6 +851,71 @@ function ConversationDetails({ conversationId, onClose }) {
                 <h2>{selectedSpan.name}</h2>
                 <button onClick={() => setSelectedSpan(null)} className="close-btn">×</button>
               </div>
+
+              {/* Linked Conversations Navigation */}
+              {(() => {
+                const links = getSpanLinks(selectedSpan.span_id)
+                if (!links || links.length === 0) return null
+                
+                return (
+                  <div style={{ 
+                    padding: '0.75rem', 
+                    background: 'rgba(59, 130, 246, 0.05)',
+                    borderBottom: '1px solid rgba(59, 130, 246, 0.2)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.5rem'
+                  }}>
+                    <div style={{ fontSize: '0.85rem', fontWeight: '600', color: '#3b82f6' }}>
+                      🔗 Linked Conversations
+                    </div>
+                    {links.map((link, idx) => {
+                      if (!link || !link.conversation_id) return null
+                      return (
+                        <button
+                          key={idx}
+                          onClick={() => navigateToLinkedConversation(link.conversation_id)}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.5rem',
+                            padding: '0.5rem 0.75rem',
+                            background: 'rgba(59, 130, 246, 0.1)',
+                            border: '1px solid rgba(59, 130, 246, 0.3)',
+                            borderRadius: '6px',
+                            color: '#3b82f6',
+                            cursor: 'pointer',
+                            fontSize: '0.85rem',
+                            transition: 'all 0.2s',
+                            textAlign: 'left'
+                          }}
+                          onMouseEnter={(e) => {
+                            e.target.style.background = 'rgba(59, 130, 246, 0.2)'
+                            e.target.style.borderColor = 'rgba(59, 130, 246, 0.5)'
+                          }}
+                          onMouseLeave={(e) => {
+                            e.target.style.background = 'rgba(59, 130, 246, 0.1)'
+                            e.target.style.borderColor = 'rgba(59, 130, 246, 0.3)'
+                          }}
+                        >
+                          <span style={{ fontSize: '1.2rem' }}>
+                            {link.relation === 'parent' ? '⬆️' : '⬇️'}
+                          </span>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontWeight: '600' }}>
+                              {link.relation === 'parent' ? 'Parent Conversation' : 'Child Conversation'}
+                            </div>
+                            <div style={{ fontSize: '0.75rem', opacity: 0.8, fontFamily: 'monospace' }}>
+                              {link.conversation_id.substring(0, 8)}...
+                            </div>
+                          </div>
+                          <span style={{ fontSize: '1rem' }}>→</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )
+              })()}
 
               <div className="panel-content">
                 {/* Agent/Span Description & Instruction */}
@@ -533,14 +1031,7 @@ function ConversationDetails({ conversationId, onClose }) {
                 {/* Messages */}
                 <div className="detail-section">
                   <h3>Messages</h3>
-                  <div className="chat">
-                    {buildMessages(selectedSpan).map((m, idx) => (
-                      <div key={idx} className={`msg ${m.role}`}>
-                        <div className="meta">{m.role}</div>
-                        <div className="text">{m.text}</div>
-                      </div>
-                    ))}
-                  </div>
+                  <MessageView messages={buildMessages(selectedSpan)} showLinkedBadge={false} />
                 </div>
 
                 {/* Tool Information */}
@@ -998,10 +1489,7 @@ function ConversationDetails({ conversationId, onClose }) {
               </div>
             </>
           ) : (
-            <div className="panel-content">
-              <h3>Span Details</h3>
-              <div className="detail-content">Select a span in the timeline to view messages, attributes, and events.</div>
-            </div>
+            renderConversationView()
           )}
         </div>
       </div>

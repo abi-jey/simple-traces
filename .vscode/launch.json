@@ -17,6 +17,14 @@
             "mode": "debug",
             "program": "${file}",
             "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "chrome",
+            "request": "launch",
+            "name": "UI",
+            "url": "http://localhost:5173",
+            "webRoot": "${workspaceFolder}/src/simple-traces/frontend/src",
+            "sourceMaps": true
         }
     ]
 }
