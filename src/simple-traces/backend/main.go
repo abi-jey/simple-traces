@@ -41,10 +41,6 @@ func Run(logLevelFlag string) error {
 
 	// API routes
 	api := router.PathPrefix("/api").Subrouter()
-	api.HandleFunc("/traces", createTraceHandler(db, logger)).Methods("POST")
-	api.HandleFunc("/traces", getTracesHandler(db, logger)).Methods("GET")
-	api.HandleFunc("/traces/{id}", getTraceByIDHandler(db, logger)).Methods("GET")
-	api.HandleFunc("/traces/{id}", deleteTraceHandler(db, logger)).Methods("DELETE")
 
 	// Spans endpoints: list and import JSONL examples
 	api.HandleFunc("/spans", getSpansHandler(db, logger)).Methods("GET")
@@ -62,7 +58,6 @@ func Run(logLevelFlag string) error {
 	// Conversations API
 	api.HandleFunc("/conversations", getConversationsHandler(db, logger)).Methods("GET")
 	api.HandleFunc("/conversations/{id}", deleteConversationHandler(db, logger)).Methods("DELETE")
-	api.HandleFunc("/conversations/{id}/linked", getLinkedConversationsHandler(db, logger)).Methods("GET")
 
 	// OpenTelemetry OTLP endpoint
 	otlpHandler := NewOTLPHandler(db, logger)
@@ -179,143 +174,6 @@ type TraceInput struct {
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
 }
 
-func createTraceHandler(db Database, logger *Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var input TraceInput
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			logger.Warn("Invalid request body for trace creation: %v", err)
-			http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
-			return
-		}
-
-		logger.Debug("Creating trace: Model=%s, PromptTokens=%d, OutputTokens=%d, Duration=%dms",
-			input.Model, input.PromptTokens, input.OutputTokens, input.Duration)
-
-		metadataJSON, _ := json.Marshal(input.Metadata)
-
-		trace := Trace{
-			Model:        input.Model,
-			Input:        input.Input,
-			Output:       input.Output,
-			PromptTokens: input.PromptTokens,
-			OutputTokens: input.OutputTokens,
-			Duration:     input.Duration,
-			Metadata:     string(metadataJSON),
-			Timestamp:    time.Now(),
-		}
-
-		id, err := db.CreateTrace(trace)
-		if err != nil {
-			logger.Error("Failed to create trace: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to create trace: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		logger.Info("Trace created successfully: %s (Model: %s, Duration: %dms, Tokens: %d/%d)",
-			id, input.Model, input.Duration, input.PromptTokens, input.OutputTokens)
-
-		trace.ID = id
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"id":      id,
-			"message": "Trace created successfully",
-		})
-	}
-}
-
-func getTracesHandler(db Database, logger *Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Optional pagination: limit (default 100), before (RFC3339 timestamp)
-		q := r.URL.Query()
-		limit := 100
-		if s := strings.TrimSpace(q.Get("limit")); s != "" {
-			if v, err := strconv.Atoi(s); err == nil && v > 0 {
-				limit = v
-			}
-		}
-		var before time.Time
-		if sb := strings.TrimSpace(q.Get("before")); sb != "" {
-			if t, err := time.Parse(time.RFC3339Nano, sb); err == nil {
-				before = t
-			} else if t, err := time.Parse(time.RFC3339, sb); err == nil {
-				before = t
-			}
-		}
-
-		logger.Debug("Fetching traces with limit=%d before=%v", limit, before)
-		traces, err := db.GetTracesPaginated(limit, before)
-		if err != nil {
-			logger.Error("Failed to get traces: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to get traces: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		logger.Debug("Retrieved %d traces", len(traces))
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(traces)
-	}
-}
-
-func getTraceByIDHandler(db Database, logger *Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-		id := vars["id"]
-
-		logger.Debug("Fetching trace by ID: %s", id)
-
-		trace, err := db.GetTraceByID(id)
-		if err != nil {
-			logger.Error("Failed to get trace %s: %v", id, err)
-			http.Error(w, fmt.Sprintf("Failed to get trace: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		if trace == nil {
-			logger.Debug("Trace not found: %s", id)
-			http.Error(w, "Trace not found", http.StatusNotFound)
-			return
-		}
-
-		logger.Debug("Retrieved trace: %s", id)
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(trace)
-	}
-}
-
-func deleteTraceHandler(db Database, logger *Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-		id := vars["id"]
-		logger.Debug("Deleting trace: %s", id)
-
-		// Try to find related OTLP trace_id from metadata and delete those spans
-		if tr, err := db.GetTraceByID(id); err == nil && tr != nil && tr.Metadata != "" {
-			var meta map[string]any
-			if err := json.Unmarshal([]byte(tr.Metadata), &meta); err == nil {
-				if otlpID, ok := meta["trace.id"].(string); ok && otlpID != "" {
-					if _, err := db.DeleteSpansByTraceID(otlpID); err != nil {
-						logger.Warn("Failed deleting spans for otlp trace %s: %v", otlpID, err)
-					}
-					if _, err := db.DeleteSpanAttributesByTraceID(otlpID); err != nil {
-						logger.Warn("Failed deleting span_attributes for otlp trace %s: %v", otlpID, err)
-					}
-				}
-			}
-		}
-
-		if err := db.DeleteTrace(id); err != nil {
-			logger.Error("Failed to delete trace %s: %v", id, err)
-			http.Error(w, fmt.Sprintf("Failed to delete trace: %v", err), http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{"ok": true})
-	}
-}
-
 // getSpansHandler returns spans ordered by start_time DESC with optional pagination
 func getSpansHandler(db Database, logger *Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -419,9 +277,6 @@ func deleteTraceGroupHandler(db Database, logger *Logger) http.HandlerFunc {
 			logger.Error("Failed to delete trace group %s: %v", groupID, err)
 			http.Error(w, fmt.Sprintf("Failed to delete group: %v", err), http.StatusInternalServerError)
 			return
-		}
-		if _, err := db.DeleteSpanAttributesByGroupID(groupID); err != nil {
-			logger.Warn("Failed to delete span attributes for group %s: %v", groupID, err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
@@ -549,55 +404,17 @@ func deleteConversationHandler(db Database, logger *Logger) http.HandlerFunc { /
 			return
 		}
 
-		// Best-effort: delete spans first (will also orphan attributes if not removed)
+		// Best-effort: delete spans first
 		nSpans, err := db.DeleteSpansByConversationID(id)
 		if err != nil {
 			logger.Error("delete spans by conversation id failed: %v", err)
 			http.Error(w, fmt.Sprintf("failed to delete spans: %v", err), http.StatusInternalServerError)
 			return
 		}
-		if _, err := db.DeleteSpanAttributesByConversationID(id); err != nil {
-			logger.Warn("delete span attributes by conversation id failed: %v", err)
-		}
 		if _, err := db.DeleteConversationRow(id); err != nil {
 			logger.Warn("delete conversation row failed: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{"ok": true, "deleted_spans": nSpans})
-	}
-}
-
-// getLinkedConversationsHandler returns conversations that this conversation links to
-func getLinkedConversationsHandler(db Database, logger *Logger) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-		id := strings.TrimSpace(vars["id"])
-		if id == "" {
-			http.Error(w, "missing id", http.StatusBadRequest)
-			return
-		}
-		linked, err := db.GetLinkedConversations(id)
-		if err != nil {
-			logger.Error("Failed to get linked conversations: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to get linked conversations: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		// Parse the pipe-delimited format: spanID|relatedSpanID|relation|conversationID
-		var result []LinkedConversation
-		for _, link := range linked {
-			parts := strings.Split(link, "|")
-			if len(parts) == 4 {
-				result = append(result, LinkedConversation{
-					SpanID:         parts[0],
-					RelatedSpanID:  parts[1],
-					Relation:       parts[2],
-					ConversationID: parts[3],
-				})
-			}
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(result)
 	}
 }

@@ -1,11 +1,13 @@
-.conversation-details-page {
+.conversation-details-page,
+.trace-details {
   padding: 2rem;
   max-width: 1600px;
   margin: 0 auto;
   animation: fadeIn 0.3s ease-out;
 }
 
-.details-page-header {
+.details-page-header,
+.details-header {
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
@@ -29,7 +31,8 @@
   flex-wrap: wrap;
 }
 
-.close-btn-large {
+.close-btn-large,
+.close-btn {
   padding: 0.5rem 1rem;
   background: var(--panel);
   border: 1px solid var(--border);
@@ -41,7 +44,8 @@
   transition: all 0.2s ease;
 }
 
-.close-btn-large:hover {
+.close-btn-large:hover,
+.close-btn:hover {
   background: var(--panel-alt);
   border-color: var(--primary);
   transform: translateY(-1px);
@@ -92,7 +96,8 @@
 }
 
 @media (max-width: 1024px) {
-  .conversation-details-page {
+  .conversation-details-page,
+  .trace-details {
     padding: 1rem;
   }
   

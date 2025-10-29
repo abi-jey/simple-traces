@@ -87,34 +87,33 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	spansProcessed := 0
 	// Collect spans for batch insert for efficiency
 	var spanRows []Span
-	var attrRows []SpanAttribute
 	// collect conversation aggregates for batch upsert
 	convAgg := make(map[string]*ConversationUpdate)
-	// collect span links
-	var spanLinks []SpanLink
+
 	for _, rs := range req.ResourceSpans {
 		for _, ss := range rs.ScopeSpans {
 			for _, span := range ss.Spans {
-				// Create trace entry and span row
-				traceEntry, spanRow, spanAttrs := h.transformSpan(span, rs.Resource)
-				// Store trace for frontend compatibility
-				if _, err := h.db.CreateTrace(traceEntry); err != nil {
-					h.logger.Error("Failed to store trace from OTLP span: %v", err)
-				}
+				// Transform span
+				spanRow := h.transformSpan(span, rs.Resource)
 				spanRows = append(spanRows, spanRow)
-				attrRows = append(attrRows, spanAttrs...)
 				spansProcessed++
 
-				// derive conversation id
-				convID := deriveConversationID(spanAttrs)
+				// derive conversation id from span attributes
+				convID := deriveConversationIDFromJSON(spanRow.Attributes)
+				userID := deriveUserIDFromJSON(spanRow.Attributes)
+
 				if convID != "" {
 					cu := convAgg[convID]
 					start := spanRow.StartTime
 					end := spanRow.EndTime
-					// try model from traceEntry
-					model := traceEntry.Model
 					if cu == nil {
-						convAgg[convID] = &ConversationUpdate{ID: convID, Start: start, End: end, Count: 1, Model: model}
+						convAgg[convID] = &ConversationUpdate{
+							ID:        convID,
+							ProjectID: spanRow.ProjectID,
+							UserID:    userID,
+							Start:     start,
+							End:       end,
+						}
 					} else {
 						if start.Before(cu.Start) {
 							cu.Start = start
@@ -122,66 +121,34 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						if end.After(cu.End) {
 							cu.End = end
 						}
-						cu.Count += 1
-						if strings.TrimSpace(cu.Model) == "" && strings.TrimSpace(model) != "" {
-							cu.Model = model
+						// Update user_id if it was empty and we now have one
+						if cu.UserID == "" && userID != "" {
+							cu.UserID = userID
 						}
 					}
-					h.logger.Debug("Derived conversation_id=%s for span_id=%s trace_id=%s", convID, spanRow.SpanID, spanRow.TraceID)
-				}
-
-				// collect span links (link to other traces)
-				if len(span.Links) > 0 {
-					for _, l := range span.Links {
-						if l == nil || len(l.TraceId) == 0 {
-							continue
-						}
-						linkedTrace := fmt.Sprintf("%x", l.TraceId)
-						if linkedTrace == "" {
-							continue
-						}
-						var linkedSpanID *string
-						if len(l.SpanId) > 0 {
-							spanIDStr := fmt.Sprintf("%x", l.SpanId)
-							linkedSpanID = &spanIDStr
-						}
-						spanLinks = append(spanLinks, SpanLink{
-							SpanID:        spanRow.SpanID,
-							TraceID:       spanRow.TraceID,
-							LinkedTraceID: linkedTrace,
-							LinkedSpanID:  linkedSpanID,
-						})
-					}
+					h.logger.Debug("Derived conversation_id=%s user_id=%s for span_id=%s trace_id=%s", convID, userID, spanRow.SpanID, spanRow.TraceID)
 				}
 			}
 		}
-	} // Batch insert spans
-	if err := h.db.BatchInsertSpans(spanRows); err != nil {
-		h.logger.Error("Failed to batch insert %d spans: %v", len(spanRows), err)
-	}
-	if err := h.db.BatchUpsertSpanAttributes(attrRows); err != nil {
-		h.logger.Error("Failed to upsert %d span attributes: %v", len(attrRows), err)
 	}
 
-	// Store span links
-	if len(spanLinks) > 0 {
-		if err := h.db.BatchInsertSpanLinks(spanLinks); err != nil {
-			h.logger.Error("Failed to insert %d span links: %v", len(spanLinks), err)
-		}
+	// Batch insert spans
+	if err := h.db.BatchInsertSpans(spanRows); err != nil {
+		h.logger.Error("Failed to batch insert %d spans: %v", len(spanRows), err)
 	}
 
 	// upsert conversations
 	if len(convAgg) > 0 {
 		updates := make([]ConversationUpdate, 0, len(convAgg))
-		for cid, v := range convAgg {
+		for convID, v := range convAgg {
 			updates = append(updates, *v)
 			// also propagate this conversation id to all spans that share the same trace id if missing
 			// we use the span trace_id as fallback linkage: update after inserts
 			for _, sp := range spanRows {
 				// propagate for spans that occurred in this batch with the same conversation id found
-				// Note: deriveConversationID used attributes only; here we ensure every span under the same OTLP trace
+				// Note: deriveConversationIDFromJSON used attributes only; here we ensure every span under the same OTLP trace
 				// gets the conv id if not already present.
-				_, _ = h.db.PropagateConversationID(sp.TraceID, cid)
+				_, _ = h.db.PropagateConversationID(sp.TraceID, convID)
 			}
 		}
 		if err := h.db.BatchUpsertConversations(updates); err != nil {
@@ -205,10 +172,20 @@ func (h *OTLPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(respBytes)
 }
 
-// deriveConversationID picks a conversation id from preferred keys in span attributes
-func deriveConversationID(attrs []SpanAttribute) string {
-	// scan by preference order among flattened attributes keys
+// deriveConversationIDFromJSON picks a conversation id from preferred keys in span attributes JSON
+func deriveConversationIDFromJSON(attrsJSON string) string {
+	if attrsJSON == "" {
+		return ""
+	}
+
+	var attrs map[string]interface{}
+	if err := json.Unmarshal([]byte(attrsJSON), &attrs); err != nil {
+		return ""
+	}
+
+	// scan by preference order
 	pref := []string{
+		"simpleTraces.conversation.id",
 		"gcp.vertex.agent.session_id",
 		"gen_ai.conversation.id",
 		"conversation.id",
@@ -218,27 +195,52 @@ func deriveConversationID(attrs []SpanAttribute) string {
 		"chat.id",
 		"thread.id",
 	}
-	// Build a quick lookup of key->string
-	m := make(map[string]string, len(attrs))
-	for _, a := range attrs {
-		if a.Type == "string" && a.StringVal != nil {
-			m[a.Key] = *a.StringVal
-		} else if a.Type == "int" && a.IntVal != nil {
-			m[a.Key] = fmt.Sprintf("%d", *a.IntVal)
-		} else if a.Type == "float" && a.FloatVal != nil {
-			m[a.Key] = fmt.Sprintf("%g", *a.FloatVal)
-		}
-	}
+
 	for _, k := range pref {
-		if v, ok := m[k]; ok && strings.TrimSpace(v) != "" {
-			return v
+		if v, ok := attrs[k]; ok {
+			if strVal, ok := v.(string); ok && strings.TrimSpace(strVal) != "" {
+				return strVal
+			}
 		}
 	}
 	return ""
 }
 
-// transformSpan converts an OTLP span to our Trace and Span structs
-func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.Resource) (Trace, Span, []SpanAttribute) {
+// Generated by Copilot
+// deriveUserIDFromJSON picks a user id from preferred keys in span attributes JSON
+func deriveUserIDFromJSON(attrsJSON string) string {
+	if attrsJSON == "" {
+		return ""
+	}
+
+	var attrs map[string]interface{}
+	if err := json.Unmarshal([]byte(attrsJSON), &attrs); err != nil {
+		return ""
+	}
+
+	// scan by preference order
+	pref := []string{
+		"simpleTraces.user.id",
+		"user.id",
+		"user_id",
+		"enduser.id",
+		"actor.id",
+		"gen_ai.user.id",
+		"session.user.id",
+	}
+
+	for _, k := range pref {
+		if v, ok := attrs[k]; ok {
+			if strVal, ok := v.(string); ok && strings.TrimSpace(strVal) != "" {
+				return strVal
+			}
+		}
+	}
+	return ""
+}
+
+// transformSpan converts an OTLP span to our Span struct
+func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.Resource) Span {
 	h.logger.Debug("Processing OTLP span: %s", span.Name)
 
 	// Extract attributes into a map
@@ -282,42 +284,6 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 		h.logger.Debug("Detected model='%s' from key '%s'", model, modelSrc)
 	} else {
 		h.logger.Debug("Detected model='%s' (no explicit source key)", model)
-	}
-	input := ""
-	output := ""
-	promptTokens := 0
-	outputTokens := 0
-
-	if inputAttr, ok := attrs["llm.input"]; ok {
-		input = fmt.Sprintf("%v", inputAttr)
-	} else if inputAttr, ok := attrs["gen_ai.prompt"]; ok {
-		input = fmt.Sprintf("%v", inputAttr)
-	}
-
-	if outputAttr, ok := attrs["llm.output"]; ok {
-		output = fmt.Sprintf("%v", outputAttr)
-	} else if outputAttr, ok := attrs["gen_ai.response"]; ok {
-		output = fmt.Sprintf("%v", outputAttr)
-	}
-
-	if promptTokensAttr, ok := attrs["llm.usage.prompt_tokens"]; ok {
-		if val, ok := promptTokensAttr.(int64); ok {
-			promptTokens = int(val)
-		}
-	} else if promptTokensAttr, ok := attrs["gen_ai.usage.input_tokens"]; ok {
-		if val, ok := promptTokensAttr.(int64); ok {
-			promptTokens = int(val)
-		}
-	}
-
-	if outputTokensAttr, ok := attrs["llm.usage.completion_tokens"]; ok {
-		if val, ok := outputTokensAttr.(int64); ok {
-			outputTokens = int(val)
-		}
-	} else if outputTokensAttr, ok := attrs["gen_ai.usage.output_tokens"]; ok {
-		if val, ok := outputTokensAttr.(int64); ok {
-			outputTokens = int(val)
-		}
 	}
 
 	// Calculate duration in milliseconds
@@ -367,19 +333,6 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 		// Log only in debug: which keys resulted from flattening (i.e., implicit renames to dot-notation)
 		h.logger.Debug("Flattened nested attributes into dot-keys (%d): %v", len(flattenedKeys), flattenedKeys)
 	}
-	metadataJSON, _ := json.Marshal(flat)
-
-	// Create trace entry
-	traceEntry := Trace{
-		Model:        model,
-		Input:        input,
-		Output:       output,
-		PromptTokens: promptTokens,
-		OutputTokens: outputTokens,
-		Duration:     duration,
-		Metadata:     string(metadataJSON),
-		Timestamp:    startTime,
-	}
 
 	// Build span row: store flattened attributes (without events) as JSON for display
 	attrsOnly := make(map[string]interface{})
@@ -394,9 +347,29 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 	}
 	// Add derived attributes for UI/search convenience
 	if strings.TrimSpace(model) != "" && strings.ToLower(model) != "unknown" {
-		attrsOnly["st.model"] = model
+		attrsOnly["simpleTraces.model"] = model
 	}
-	attrsOnly["st.category"] = detectCategory(span.Name, flat)
+	attrsOnly["simpleTraces.category"] = detectCategory(span.Name, flat)
+
+	// Extract project_id from attributes with preference order
+	projectID := "default"
+	projectKeys := []string{
+		"simpleTraces.project.id",
+		"project.id",
+		"resource.project.id",
+		"gcp.project.id",
+		"service.namespace",
+	}
+	for _, key := range projectKeys {
+		if projAttr, ok := attrs[key]; ok {
+			if projStr, ok := projAttr.(string); ok && strings.TrimSpace(projStr) != "" {
+				projectID = projStr
+				break
+			}
+		}
+	}
+	// Also store in attributes for consistency
+	attrsOnly["simpleTraces.project.id"] = projectID
 
 	attrsStr, _ := json.Marshal(attrsOnly)
 	var eventsStr []byte
@@ -407,6 +380,7 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 	spanRow := Span{
 		SpanID:       fmt.Sprintf("%x", span.SpanId),
 		TraceID:      fmt.Sprintf("%x", span.TraceId),
+		ProjectID:    projectID,
 		ParentSpanID: fmt.Sprintf("%x", span.ParentSpanId),
 		Name:         span.Name,
 		StartTime:    startTime,
@@ -422,92 +396,7 @@ func (h *OTLPHandler) transformSpan(span *tracepbv1.Span, resource *resourcepb.R
 		spanRow.StatusDesc = span.Status.Message
 	}
 
-	// Build typed span attributes rows from flattened map
-	var attrRows []SpanAttribute
-	var skippedKeys []string
-	var typeCoercions []string
-	for k, v := range attrsOnly {
-		// Skip IDs if present as attributesOnly
-		if k == "span.id" || k == "trace.id" {
-			skippedKeys = append(skippedKeys, k+" (stored separately)")
-			continue
-		}
-		a := SpanAttribute{SpanID: spanRow.SpanID, TraceID: spanRow.TraceID, Key: k, Type: AttrType(v)}
-		switch a.Type {
-		case "string":
-			s := fmt.Sprintf("%v", v)
-			a.StringVal = &s
-		case "bool":
-			if b, ok := v.(bool); ok {
-				a.BoolVal = &b
-			} else {
-				// fallback to string
-				s := fmt.Sprintf("%v", v)
-				a.Type = "string"
-				a.StringVal = &s
-				typeCoercions = append(typeCoercions, fmt.Sprintf("%s: bool->string", k))
-			}
-		case "int":
-			switch n := v.(type) {
-			case int64:
-				a.IntVal = &n
-			case int:
-				nn := int64(n)
-				a.IntVal = &nn
-			case float64:
-				nn := int64(n)
-				a.IntVal = &nn
-			default:
-				s := fmt.Sprintf("%v", v)
-				a.Type = "string"
-				a.StringVal = &s
-				typeCoercions = append(typeCoercions, fmt.Sprintf("%s: int->string", k))
-			}
-		case "float":
-			switch n := v.(type) {
-			case float64:
-				a.FloatVal = &n
-			case float32:
-				f := float64(n)
-				a.FloatVal = &f
-			case int64:
-				f := float64(n)
-				a.FloatVal = &f
-			case int:
-				f := float64(n)
-				a.FloatVal = &f
-			default:
-				s := fmt.Sprintf("%v", v)
-				a.Type = "string"
-				a.StringVal = &s
-				typeCoercions = append(typeCoercions, fmt.Sprintf("%s: float->string", k))
-			}
-		case "array", "object", "null":
-			b, _ := json.Marshal(v)
-			s := string(b)
-			a.JSONVal = &s
-		default:
-			s := fmt.Sprintf("%v", v)
-			a.Type = "string"
-			a.StringVal = &s
-		}
-		attrRows = append(attrRows, a)
-	}
-
-	// Debug summary: what we did/didn't store
-	if len(skippedKeys) > 0 {
-		h.logger.Debug("Skipped attributes for typed storage (span %s): %v", spanRow.SpanID, skippedKeys)
-	}
-	if len(typeCoercions) > 0 {
-		h.logger.Debug("Type coercions applied (span %s): %v", spanRow.SpanID, typeCoercions)
-	}
-	if _, ok := attrs["span.events"]; ok {
-		h.logger.Debug("span.events stored in Events column for span %s (%d events)", spanRow.SpanID, len(span.Events))
-	}
-	// Summary: how many attributes we prepared vs available
-	h.logger.Debug("Prepared %d typed attributes from %d flattened keys for span %s (skipped=%d)", len(attrRows), len(attrsOnly), spanRow.SpanID, len(skippedKeys))
-
-	return traceEntry, spanRow, attrRows
+	return spanRow
 }
 
 // augmentVertexAttrs parses provider-specific blobs (like Vertex Agent request/response) into normalized keys
@@ -524,8 +413,8 @@ func augmentVertexAttrs(attrs map[string]any) []string {
 				// system instruction
 				if cfg, ok := req["config"].(map[string]any); ok {
 					if si, ok := cfg["system_instruction"].(string); ok && strings.TrimSpace(si) != "" {
-						attrs["st.system_instruction"] = si
-						added = append(added, "st.system_instruction")
+						attrs["simpleTraces.system_instruction"] = si
+						added = append(added, "simpleTraces.system_instruction")
 					}
 				}
 				// user messages -> derive prompt (take last user text)
@@ -563,8 +452,8 @@ func augmentVertexAttrs(attrs map[string]any) []string {
 								added = append(added, "gen_ai.prompt")
 							}
 							// also expose all messages for UI (kept as array)
-							attrs["st.messages"] = arr
-							added = append(added, "st.messages")
+							attrs["simpleTraces.messages"] = arr
+							added = append(added, "simpleTraces.messages")
 						}
 					}
 				}
@@ -651,7 +540,7 @@ func asInt(v any) (int64, bool) {
 func detectModelFromAttrs(attrs map[string]any) (string, string) {
 	// direct keys first
 	keys := []string{
-		"st.model", // already normalized
+		"simpleTraces.model", // already normalized
 		"llm.model", "gen_ai.request.model", "openai.model", "anthropic.model",
 		"vertex.model", "google.vertex.model", "ai.model", "model",
 	}
@@ -708,7 +597,7 @@ func detectCategory(name string, attrs map[string]any) string {
 	n := strings.ToLower(name)
 	has := func(k string) bool { _, ok := attrs[k]; return ok }
 	// LLM calls
-	if has("llm.model") || has("gen_ai.request.model") || has("st.model") || strings.Contains(n, "call_llm") ||
+	if has("llm.model") || has("gen_ai.request.model") || has("simpleTraces.model") || strings.Contains(n, "call_llm") ||
 		strings.Contains(n, "openai") || strings.Contains(n, "anthropic") || strings.Contains(n, "gemini") {
 		return "llm"
 	}

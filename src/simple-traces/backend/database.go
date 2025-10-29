@@ -16,21 +16,10 @@ import (
 )
 
 // GORM Models with proper tags
-type Trace struct {
-	ID           string    `gorm:"primaryKey" json:"id"`
-	Model        string    `json:"model"`
-	Input        string    `json:"input"`
-	Output       string    `json:"output"`
-	PromptTokens int       `json:"prompt_tokens"`
-	OutputTokens int       `json:"output_tokens"`
-	Duration     int64     `json:"duration"`
-	Metadata     string    `json:"metadata,omitempty"`
-	Timestamp    time.Time `gorm:"index" json:"timestamp"`
-}
-
 type Span struct {
 	SpanID       string    `gorm:"primaryKey" json:"span_id"`
 	TraceID      string    `gorm:"index:idx_trace_id;index:idx_group_id" json:"trace_id"`
+	ProjectID    string    `gorm:"index" json:"project_id"`
 	ParentSpanID string    `json:"parent_span_id,omitempty"`
 	Name         string    `json:"name"`
 	StartTime    time.Time `gorm:"index:idx_start_time" json:"start_time"`
@@ -42,26 +31,12 @@ type Span struct {
 	Events       string    `gorm:"type:text" json:"events,omitempty"`
 }
 
-type SpanAttribute struct {
-	ID        uint     `gorm:"primaryKey;autoIncrement" json:"-"`
-	SpanID    string   `gorm:"index:idx_span_attr" json:"span_id"`
-	TraceID   string   `gorm:"index:idx_trace_attr" json:"trace_id"`
-	Key       string   `gorm:"index:idx_key" json:"key"`
-	Type      string   `json:"type"`
-	StringVal *string  `json:"string_val,omitempty"`
-	IntVal    *int64   `json:"int_val,omitempty"`
-	FloatVal  *float64 `json:"float_val,omitempty"`
-	BoolVal   *bool    `json:"bool_val,omitempty"`
-	JSONVal   *string  `gorm:"type:text" json:"json_val,omitempty"`
-}
-
 type Conversation struct {
 	ID             string    `gorm:"primaryKey" json:"id"`
 	ProjectID      string    `gorm:"index;default:'default'" json:"project_id"`
+	UserID         string    `gorm:"index" json:"user_id,omitempty"`
 	FirstStartTime time.Time `json:"first_start_time"`
 	LastEndTime    time.Time `gorm:"index" json:"last_end_time"`
-	SpanCount      int       `json:"span_count"`
-	Model          string    `json:"model,omitempty"`
 }
 
 type Project struct {
@@ -71,37 +46,20 @@ type Project struct {
 	UpdatedAt time.Time `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
-type SpanLink struct {
-	ID            uint    `gorm:"primaryKey;autoIncrement" json:"-"`
-	SpanID        string  `gorm:"index:idx_span_links" json:"span_id"`
-	TraceID       string  `gorm:"index:idx_trace_links" json:"trace_id"`
-	LinkedTraceID string  `gorm:"index:idx_linked_trace" json:"linked_trace_id"`
-	LinkedSpanID  *string `json:"linked_span_id,omitempty"`
-}
-
 // Helper structs
 type TraceGroup struct {
 	TraceID        string    `json:"trace_id"`
 	FirstStartTime time.Time `json:"first_start_time"`
 	LastEndTime    time.Time `json:"last_end_time"`
 	SpanCount      int       `json:"span_count"`
-	Model          string    `json:"model,omitempty"`
 }
 
 type ConversationUpdate struct {
 	ID        string
 	ProjectID string
+	UserID    string
 	Start     time.Time
 	End       time.Time
-	Count     int
-	Model     string
-}
-
-type LinkedConversation struct {
-	SpanID         string `json:"span_id"`
-	RelatedSpanID  string `json:"related_span_id"`
-	Relation       string `json:"relation"`
-	ConversationID string `json:"conversation_id"`
 }
 
 // GormDB implements the Database interface using GORM
@@ -109,22 +67,12 @@ type GormDB struct {
 	db *gorm.DB
 }
 
-// Database interface remains the same
+// Database interface
 type Database interface {
-	CreateTrace(trace Trace) (string, error)
-	GetTraces() ([]Trace, error)
-	GetTracesPaginated(limit int, before time.Time) ([]Trace, error)
-	GetTraceByID(id string) (*Trace, error)
-	DeleteTrace(id string) error
-
 	BatchInsertSpans(spans []Span) error
 	GetSpans(limit int, before time.Time) ([]Span, error)
 	DeleteSpansByTraceID(traceID string) (int64, error)
 	DeleteSpansByGroupID(groupID string) (int64, error)
-
-	BatchUpsertSpanAttributes(attrs []SpanAttribute) error
-	DeleteSpanAttributesByTraceID(traceID string) (int64, error)
-	DeleteSpanAttributesByGroupID(groupID string) (int64, error)
 
 	GetTraceGroups(limit int, before time.Time) ([]TraceGroup, error)
 	GetTraceGroupSpans(traceID string, limit int) ([]Span, error)
@@ -136,12 +84,9 @@ type Database interface {
 	GetConversationsWithSearch(limit int, before time.Time, search string) ([]Conversation, error)
 	PropagateConversationID(traceID, conversationID string) (int64, error)
 	DeleteSpansByConversationID(conversationID string) (int64, error)
-	DeleteSpanAttributesByConversationID(conversationID string) (int64, error)
 	DeleteConversationRow(conversationID string) (int64, error)
 	LookupConversationIDByTraceID(traceID string) (string, error)
 
-	BatchInsertSpanLinks(links []SpanLink) error
-	GetLinkedConversations(conversationID string) ([]string, error)
 	BackfillDerived(limit int) (int, int, error)
 
 	GetProjects() ([]Project, error)
@@ -186,12 +131,9 @@ func InitDatabase(config *Config) (Database, error) {
 
 	// Auto-migrate all models
 	if err := gormDB.AutoMigrate(
-		&Trace{},
 		&Span{},
-		&SpanAttribute{},
 		&Conversation{},
 		&Project{},
-		&SpanLink{},
 	); err != nil {
 		return nil, fmt.Errorf("failed to migrate database: %w", err)
 	}
@@ -213,52 +155,6 @@ func (g *GormDB) Close() error {
 		return err
 	}
 	return sqlDB.Close()
-}
-
-// Trace operations
-func (g *GormDB) CreateTrace(trace Trace) (string, error) {
-	if trace.ID == "" {
-		trace.ID = generateID()
-	}
-	if err := g.db.Create(&trace).Error; err != nil {
-		return "", err
-	}
-	return trace.ID, nil
-}
-
-func (g *GormDB) GetTraces() ([]Trace, error) {
-	return g.GetTracesPaginated(100, time.Time{})
-}
-
-func (g *GormDB) GetTracesPaginated(limit int, before time.Time) ([]Trace, error) {
-	if limit <= 0 || limit > 1000 {
-		limit = 100
-	}
-
-	var traces []Trace
-	query := g.db.Order("timestamp DESC").Limit(limit)
-
-	if !before.IsZero() {
-		query = query.Where("timestamp < ?", before)
-	}
-
-	if err := query.Find(&traces).Error; err != nil {
-		return nil, err
-	}
-
-	return traces, nil
-}
-
-func (g *GormDB) GetTraceByID(id string) (*Trace, error) {
-	var trace Trace
-	if err := g.db.First(&trace, "id = ?", id).Error; err != nil {
-		return nil, err
-	}
-	return &trace, nil
-}
-
-func (g *GormDB) DeleteTrace(id string) error {
-	return g.db.Delete(&Trace{}, "id = ?", id).Error
 }
 
 // Span operations
@@ -294,42 +190,8 @@ func (g *GormDB) DeleteSpansByTraceID(traceID string) (int64, error) {
 }
 
 func (g *GormDB) DeleteSpansByGroupID(groupID string) (int64, error) {
-	// For SQLite, group_id is trace_id or attribute st.conversation
+	// For SQLite, group_id is trace_id or attribute simpleTraces.conversation.id
 	result := g.db.Where("trace_id = ?", groupID).Delete(&Span{})
-	return result.RowsAffected, result.Error
-}
-
-// SpanAttribute operations
-func (g *GormDB) BatchUpsertSpanAttributes(attrs []SpanAttribute) error {
-	if len(attrs) == 0 {
-		return nil
-	}
-
-	// Delete existing attributes for these spans first
-	spanIDs := make([]string, 0, len(attrs))
-	seen := make(map[string]bool)
-	for _, attr := range attrs {
-		if !seen[attr.SpanID] {
-			spanIDs = append(spanIDs, attr.SpanID)
-			seen[attr.SpanID] = true
-		}
-	}
-
-	if err := g.db.Where("span_id IN ?", spanIDs).Delete(&SpanAttribute{}).Error; err != nil {
-		return err
-	}
-
-	// Insert new attributes
-	return g.db.CreateInBatches(attrs, 100).Error
-}
-
-func (g *GormDB) DeleteSpanAttributesByTraceID(traceID string) (int64, error) {
-	result := g.db.Where("trace_id = ?", traceID).Delete(&SpanAttribute{})
-	return result.RowsAffected, result.Error
-}
-
-func (g *GormDB) DeleteSpanAttributesByGroupID(groupID string) (int64, error) {
-	result := g.db.Where("trace_id = ?", groupID).Delete(&SpanAttribute{})
 	return result.RowsAffected, result.Error
 }
 
@@ -361,7 +223,6 @@ func (g *GormDB) GetTraceGroups(limit int, before time.Time) ([]TraceGroup, erro
 		return nil, err
 	}
 
-	// Extract models
 	groups := make([]TraceGroup, len(results))
 	for i, r := range results {
 		groups[i] = TraceGroup{
@@ -369,14 +230,6 @@ func (g *GormDB) GetTraceGroups(limit int, before time.Time) ([]TraceGroup, erro
 			FirstStartTime: r.FirstStartTime,
 			LastEndTime:    r.LastEndTime,
 			SpanCount:      r.SpanCount,
-		}
-
-		// Get model from latest span
-		var span Span
-		if err := g.db.Where("trace_id = ?", r.TraceID).
-			Order("start_time DESC").
-			First(&span).Error; err == nil {
-			groups[i].Model = extractModelFromAttrJSON(span.Attributes)
 		}
 	}
 
@@ -438,13 +291,6 @@ func (g *GormDB) GetTraceGroupsWithSearch(limit int, before time.Time, search st
 			LastEndTime:    r.LastEndTime,
 			SpanCount:      r.SpanCount,
 		}
-
-		var span Span
-		if err := g.db.Where("trace_id = ?", r.TraceID).
-			Order("start_time DESC").
-			First(&span).Error; err == nil {
-			groups[i].Model = extractModelFromAttrJSON(span.Attributes)
-		}
 	}
 
 	return groups, nil
@@ -485,10 +331,9 @@ func (g *GormDB) BatchUpsertConversations(updates []ConversationUpdate) error {
 			conv = Conversation{
 				ID:             u.ID,
 				ProjectID:      u.ProjectID,
+				UserID:         u.UserID,
 				FirstStartTime: u.Start,
 				LastEndTime:    u.End,
-				SpanCount:      u.Count,
-				Model:          u.Model,
 			}
 			if conv.ProjectID == "" {
 				conv.ProjectID = "default"
@@ -500,17 +345,16 @@ func (g *GormDB) BatchUpsertConversations(updates []ConversationUpdate) error {
 			return err
 		} else {
 			// Update existing conversation
-			updates := map[string]interface{}{
+			updateFields := map[string]interface{}{
 				"last_end_time": u.End,
-				"span_count":    gorm.Expr("span_count + ?", u.Count),
 			}
 			if u.Start.Before(conv.FirstStartTime) {
-				updates["first_start_time"] = u.Start
+				updateFields["first_start_time"] = u.Start
 			}
-			if u.Model != "" && conv.Model == "" {
-				updates["model"] = u.Model
+			if u.UserID != "" && conv.UserID == "" {
+				updateFields["user_id"] = u.UserID
 			}
-			if err := g.db.Model(&conv).Updates(updates).Error; err != nil {
+			if err := g.db.Model(&conv).Updates(updateFields).Error; err != nil {
 				return err
 			}
 		}
@@ -581,7 +425,7 @@ func (g *GormDB) PropagateConversationID(traceID, conversationID string) (int64,
 		}
 
 		// Add conversation ID
-		attrs["st.conversation"] = conversationID
+		attrs["simpleTraces.conversation.id"] = conversationID
 
 		// Marshal back
 		attrsJSON, err := json.Marshal(attrs)
@@ -594,17 +438,6 @@ func (g *GormDB) PropagateConversationID(traceID, conversationID string) (int64,
 			continue
 		}
 
-		// Also update span_attributes table
-		convAttr := SpanAttribute{
-			SpanID:    span.SpanID,
-			TraceID:   span.TraceID,
-			Key:       "st.conversation",
-			Type:      "string",
-			StringVal: &conversationID,
-		}
-		g.db.Where("span_id = ? AND key = ?", span.SpanID, "st.conversation").Delete(&SpanAttribute{})
-		g.db.Create(&convAttr)
-
 		updated++
 	}
 
@@ -612,43 +445,23 @@ func (g *GormDB) PropagateConversationID(traceID, conversationID string) (int64,
 }
 
 func (g *GormDB) DeleteSpansByConversationID(conversationID string) (int64, error) {
-	// Find spans with st.conversation attribute
-	var attrs []SpanAttribute
-	if err := g.db.Where("key = ? AND string_val = ?", "st.conversation", conversationID).
-		Find(&attrs).Error; err != nil {
+	// Find spans with simpleTraces.conversation.id attribute in JSON
+	var spans []Span
+	if err := g.db.Where("attributes LIKE ?", "%\"simpleTraces.conversation.id\":\""+conversationID+"\"%").
+		Find(&spans).Error; err != nil {
 		return 0, err
 	}
 
-	if len(attrs) == 0 {
+	if len(spans) == 0 {
 		return 0, nil
 	}
 
-	spanIDs := make([]string, len(attrs))
-	for i, attr := range attrs {
-		spanIDs[i] = attr.SpanID
+	spanIDs := make([]string, len(spans))
+	for i, span := range spans {
+		spanIDs[i] = span.SpanID
 	}
 
 	result := g.db.Where("span_id IN ?", spanIDs).Delete(&Span{})
-	return result.RowsAffected, result.Error
-}
-
-func (g *GormDB) DeleteSpanAttributesByConversationID(conversationID string) (int64, error) {
-	var attrs []SpanAttribute
-	if err := g.db.Where("key = ? AND string_val = ?", "st.conversation", conversationID).
-		Find(&attrs).Error; err != nil {
-		return 0, err
-	}
-
-	if len(attrs) == 0 {
-		return 0, nil
-	}
-
-	spanIDs := make([]string, len(attrs))
-	for i, attr := range attrs {
-		spanIDs[i] = attr.SpanID
-	}
-
-	result := g.db.Where("span_id IN ?", spanIDs).Delete(&SpanAttribute{})
 	return result.RowsAffected, result.Error
 }
 
@@ -658,9 +471,11 @@ func (g *GormDB) DeleteConversationRow(conversationID string) (int64, error) {
 }
 
 func (g *GormDB) LookupConversationIDByTraceID(traceID string) (string, error) {
-	var attr SpanAttribute
-	err := g.db.Where("trace_id = ? AND key = ?", traceID, "st.conversation").
-		First(&attr).Error
+	// Look for simpleTraces.conversation.id in attributes JSON
+	var span Span
+	err := g.db.Where("trace_id = ?", traceID).
+		Where("attributes LIKE ?", "%\"simpleTraces.conversation.id\":%").
+		First(&span).Error
 
 	if err == gorm.ErrRecordNotFound {
 		return "", nil
@@ -669,69 +484,17 @@ func (g *GormDB) LookupConversationIDByTraceID(traceID string) (string, error) {
 		return "", err
 	}
 
-	if attr.StringVal != nil {
-		return *attr.StringVal, nil
+	// Parse attributes to extract conversation ID
+	var attrs map[string]interface{}
+	if err := json.Unmarshal([]byte(span.Attributes), &attrs); err != nil {
+		return "", nil
+	}
+
+	if convID, ok := attrs["simpleTraces.conversation.id"].(string); ok {
+		return convID, nil
 	}
 
 	return "", nil
-}
-
-// SpanLink operations
-func (g *GormDB) BatchInsertSpanLinks(links []SpanLink) error {
-	if len(links) == 0 {
-		return nil
-	}
-	return g.db.CreateInBatches(links, 100).Error
-}
-
-func (g *GormDB) GetLinkedConversations(conversationID string) ([]string, error) {
-	// Find all spans in this conversation
-	var attrs []SpanAttribute
-	if err := g.db.Where("key = ? AND string_val = ?", "st.conversation", conversationID).
-		Find(&attrs).Error; err != nil {
-		return nil, err
-	}
-
-	if len(attrs) == 0 {
-		return []string{}, nil
-	}
-
-	spanIDs := make([]string, len(attrs))
-	for i, attr := range attrs {
-		spanIDs[i] = attr.SpanID
-	}
-
-	// Find linked spans
-	var links []SpanLink
-	if err := g.db.Where("span_id IN ?", spanIDs).Find(&links).Error; err != nil {
-		return nil, err
-	}
-
-	// Get conversation IDs for linked traces
-	linkedTraceIDs := make([]string, 0)
-	for _, link := range links {
-		linkedTraceIDs = append(linkedTraceIDs, link.LinkedTraceID)
-	}
-
-	if len(linkedTraceIDs) == 0 {
-		return []string{}, nil
-	}
-
-	var linkedAttrs []SpanAttribute
-	if err := g.db.Where("trace_id IN ? AND key = ?", linkedTraceIDs, "st.conversation").
-		Distinct("string_val").
-		Find(&linkedAttrs).Error; err != nil {
-		return nil, err
-	}
-
-	result := make([]string, 0)
-	for _, attr := range linkedAttrs {
-		if attr.StringVal != nil && *attr.StringVal != conversationID {
-			result = append(result, *attr.StringVal)
-		}
-	}
-
-	return result, nil
 }
 
 // BackfillDerived computes and stores derived attributes
@@ -740,17 +503,16 @@ func (g *GormDB) BackfillDerived(limit int) (int, int, error) {
 		limit = 100
 	}
 
-	// Find spans without st.model or st.category
+	// Find spans without simpleTraces.model or simpleTraces.category
 	var spans []Span
-	if err := g.db.Where("attributes NOT LIKE ?", "%st.model%").
-		Or("attributes NOT LIKE ?", "%st.category%").
+	if err := g.db.Where("attributes NOT LIKE ?", "%simpleTraces.model%").
+		Or("attributes NOT LIKE ?", "%simpleTraces.category%").
 		Limit(limit).
 		Find(&spans).Error; err != nil {
 		return 0, 0, err
 	}
 
 	updatedSpans := 0
-	upsertedAttrs := 0
 
 	for _, span := range spans {
 		var attrs map[string]interface{}
@@ -765,45 +527,23 @@ func (g *GormDB) BackfillDerived(limit int) (int, int, error) {
 		modified := false
 
 		// Derive model
-		if _, exists := attrs["st.model"]; !exists {
+		if _, exists := attrs["simpleTraces.model"]; !exists {
 			if model := extractModelFromAttrJSON(span.Attributes); model != "" {
-				attrs["st.model"] = model
+				attrs["simpleTraces.model"] = model
 				modified = true
-
-				modelAttr := SpanAttribute{
-					SpanID:    span.SpanID,
-					TraceID:   span.TraceID,
-					Key:       "st.model",
-					Type:      "string",
-					StringVal: &model,
-				}
-				g.db.Where("span_id = ? AND key = ?", span.SpanID, "st.model").Delete(&SpanAttribute{})
-				g.db.Create(&modelAttr)
-				upsertedAttrs++
 			}
 		}
 
 		// Derive category
-		if _, exists := attrs["st.category"]; !exists {
+		if _, exists := attrs["simpleTraces.category"]; !exists {
 			category := "other"
 			if strings.Contains(strings.ToLower(span.Name), "llm") {
 				category = "llm"
 			} else if strings.Contains(strings.ToLower(span.Name), "tool") {
 				category = "tool"
 			}
-			attrs["st.category"] = category
+			attrs["simpleTraces.category"] = category
 			modified = true
-
-			catAttr := SpanAttribute{
-				SpanID:    span.SpanID,
-				TraceID:   span.TraceID,
-				Key:       "st.category",
-				Type:      "string",
-				StringVal: &category,
-			}
-			g.db.Where("span_id = ? AND key = ?", span.SpanID, "st.category").Delete(&SpanAttribute{})
-			g.db.Create(&catAttr)
-			upsertedAttrs++
 		}
 
 		if modified {
@@ -813,7 +553,7 @@ func (g *GormDB) BackfillDerived(limit int) (int, int, error) {
 		}
 	}
 
-	return updatedSpans, upsertedAttrs, nil
+	return updatedSpans, 0, nil
 }
 
 // Project operations
@@ -868,7 +608,7 @@ func extractModelFromAttrJSON(attrJSON string) string {
 	}
 
 	// Try different model keys
-	modelKeys := []string{"gen_ai.request.model", "model", "llm.model", "st.model"}
+	modelKeys := []string{"gen_ai.request.model", "model", "llm.model", "simpleTraces.model"}
 	for _, key := range modelKeys {
 		if val, ok := attrs[key]; ok {
 			if str, ok := val.(string); ok && str != "" {
