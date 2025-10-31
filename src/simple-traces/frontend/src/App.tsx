@@ -16,6 +16,7 @@ export default function App() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('connecting')
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
   // Search UI moved to Header and is currently non-functional.
+  const [probes, setProbes] = useState<boolean[]>([])
 
   useEffect(() => {
     const saved = localStorage.getItem('st-theme') as Theme | null
@@ -28,6 +29,26 @@ export default function App() {
     setTheme(next)
     localStorage.setItem('st-theme', next)
     document.documentElement.setAttribute('data-theme', next)
+  }
+
+  // Record result of conversation API probe and compute connection status
+  const onConnectionProbe = (ok: boolean) => {
+    setProbes((prev) => {
+      const next = [...prev, ok].slice(-3)
+      // Determine status from last 3 results
+      let status: ConnectionStatus = 'connecting'
+      if (next.length === 3) {
+        const successes = next.filter(Boolean).length
+        const failures = 3 - successes
+        if (successes === 3) status = 'connected'
+        else if (failures === 3) status = 'disconnected'
+        else status = 'connecting'
+      } else {
+        status = 'connecting'
+      }
+      if (status !== connectionStatus) setConnectionStatus(status)
+      return next
+    })
   }
 
   // Basic route parse
@@ -106,6 +127,7 @@ export default function App() {
             theme={theme}
             onNavigateConversation={navigateToConversation}
             connectionStatus={connectionStatus}
+            onConnectionProbe={onConnectionProbe}
           />
         )}
 

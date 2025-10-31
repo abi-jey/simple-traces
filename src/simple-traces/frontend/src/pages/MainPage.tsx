@@ -12,10 +12,12 @@ export default function MainPage({
   theme,
   onNavigateConversation,
   connectionStatus,
+  onConnectionProbe,
 }: {
   theme: Theme
   onNavigateConversation: (id: string) => void
   connectionStatus: 'connecting' | 'connected' | 'disconnected'
+  onConnectionProbe: (ok: boolean) => void
 }) {
   const [groups, setGroups] = useState<GroupListItem[]>([])
   const [groupsLoading, setGroupsLoading] = useState<boolean>(true)
@@ -30,9 +32,15 @@ export default function MainPage({
   const sentinelRef = useRef<HTMLDivElement | null>(null)
   const debounceRef = useRef<number | null>(null)
 
+  // Keep a stable reference to the probe callback to avoid effect/deps loops
+  const probeRef = useRef(onConnectionProbe)
+  useEffect(() => { probeRef.current = onConnectionProbe }, [onConnectionProbe])
+
   const loadGroups = useCallback(async (refresh: boolean) => {
     try {
       const data = await fetchConversations({ limit: 100, before: refresh ? null : groupsBefore })
+      // Report success to connection status probe
+      probeRef.current?.(true)
       setGroupsLoading(false)
       if (refresh) setGroups(data)
       else setGroups((prev) => [...prev, ...data])
@@ -44,6 +52,8 @@ export default function MainPage({
         setHasMoreGroups(false)
       }
     } catch (e) {
+      // Report failure to connection status probe
+      probeRef.current?.(false)
       setGroupsLoading(false)
     }
   }, [groupsBefore])
@@ -59,13 +69,15 @@ export default function MainPage({
     }
   }, [])
 
-  // Initial load and light polling each 5s
+  // Initial load and light polling each 5s (only set up once)
   useEffect(() => {
     setGroupsLoading(true)
     loadGroups(true)
     const id = setInterval(() => loadGroups(true), 5000)
     return () => clearInterval(id)
-  }, [loadGroups])
+    // Intentionally not depending on loadGroups to avoid re-running on state changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Infinite scroll observer (shared hook)
   useInfiniteScroll({
